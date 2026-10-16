@@ -1,7 +1,11 @@
 // @vitest-environment node
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { sessions } from '@/lib/sessions';
 import { POST as chat } from '../chat/route';
+import { POST as uploadQr } from '../payment-qr/route';
 import { PUT } from './user-info/route';
 import { GET, POST } from './route';
 
@@ -79,5 +83,31 @@ describe('POST /api/chat with a busy session', () => {
     expect(response.status).toBe(409);
     await sessions.unlock(id);
     vi.unstubAllEnvs();
+  });
+});
+
+describe('session log for QR uploads (CHAT_LOG_DIR)', () => {
+  it('adds a QR upload section with the result and the two chat messages', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'session-logs-'));
+    vi.stubEnv('CHAT_LOG_DIR', dir);
+    vi.stubEnv('NODE_ENV', 'development');
+    const { id } = await sessions.create();
+    const form = new FormData();
+    form.append('sessionId', id);
+    form.append('image', new Blob(['not an image'], { type: 'image/png' }), 'qr.png');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const response = await uploadQr(
+      new Request('http://localhost/api/payment-qr', { method: 'POST', body: form }),
+    );
+
+    expect(response.status).toBe(422);
+    const file = readFileSync(join(dir, `${id}.md`), 'utf8');
+    expect(file).toContain('## QR upload · ');
+    expect(file).toContain('> [Ảnh mã QR ngân hàng]');
+    expect(file).toContain('Result: ❌ 422: Could not read the image');
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    rmSync(dir, { recursive: true, force: true });
   });
 });

@@ -6,10 +6,12 @@ import {
   paymentReadFailed,
   PaymentQrError,
   QR_UPLOAD_MESSAGE,
+  renderQrUpload,
   type ChatMessage,
   type PaymentQrInfo,
 } from '@chatbot/core';
 import { decodeQrImage } from '@chatbot/core/qr-image';
+import { appendSessionLog, sessionLogDir } from '@/lib/session-log';
 import { sessions } from '@/lib/sessions';
 
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
@@ -56,6 +58,13 @@ export async function POST(request: Request): Promise<Response> {
     session.messages.push(...messages);
     if ('info' in result) session.pendingPayment = result.info;
     await sessions.save(session);
+
+    const logDir = sessionLogDir();
+    if (logDir) {
+      const status = 'info' in result ? 200 : result.status;
+      const error = 'info' in result ? undefined : result.error;
+      appendSessionLog(logDir, id, renderQrUpload({ time: new Date(), status, error, messages }));
+    }
 
     return 'info' in result
       ? Response.json({ messages })

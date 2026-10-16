@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { SUMMARY_PROMPT } from '../chat/prompt';
+import type { TraceEvent } from '../chat/trace';
 import type { PaymentQrInfo } from '../payment/vietqr';
 import type { ChatEvent, ChatMessage, ChatProvider, ChatTool } from '../types';
 import { chatTurn, SessionBusyError } from './chat-turn';
@@ -173,6 +174,84 @@ describe('chatTurn', () => {
     expect((await store.get(session.id))?.summary).toEqual({
       count: (events[1] as { count: number }).count,
       content: 'SUMMARY',
+    });
+  });
+
+  describe('trace events for the session log', () => {
+    const traced = () => {
+      const events: TraceEvent[] = [];
+      return { events, onTrace: (event: TraceEvent) => void events.push(event) };
+    };
+
+    it('starts with the message and whether the session is new, ends with the reply', async () => {
+      const store = new MemorySessionStore();
+      const { provider } = fakeProvider(() => chunks('Xin ', 'chào'));
+      const { events, onTrace } = traced();
+
+      const [first] = await collect(chatTurn({ message: 'hi' }, { store, provider, onTrace }));
+
+      const sessionId = (first as { sessionId: string }).sessionId;
+      expect(events[0]).toEqual({
+        type: 'turn.start',
+        sessionId,
+        newSession: true,
+        content: { message: 'hi' },
+      });
+      expect(events.at(-1)).toEqual({
+        type: 'turn.end',
+        sessionId,
+        content: { reply: 'Xin chào', bank: [] },
+      });
+    });
+
+    it('reports bank details proposed, saved and cancelled, with the details', async () => {
+      const store = new MemorySessionStore();
+      const session = await store.create();
+      const run = async (steps: object[]) => {
+        const { provider } = fakeProvider(async function* (_, tools) {
+          for (const step of steps) await bankTool(tools).run(step);
+          yield 'ok';
+        });
+        const { events, onTrace } = traced();
+        await collect(
+          chatTurn({ sessionId: session.id, message: 'm' }, { store, provider, onTrace }),
+        );
+        return events.at(-1)?.content;
+      };
+
+      expect(
+        await run([{ step: 'propose', bank: 'VCB', accountNumber: '0123456789' }]),
+      ).toMatchObject({ bank: [{ action: 'proposed', details: VCB_PAYMENT }] });
+      expect(await run([{ step: 'confirm' }])).toMatchObject({
+        bank: [{ action: 'saved', details: VCB_PAYMENT }],
+      });
+      expect(
+        await run([
+          { step: 'propose', bank: 'VCB', accountNumber: '0123456789' },
+          { step: 'cancel' },
+        ]),
+      ).toMatchObject({ bank: [{ action: 'proposed' }, { action: 'cancelled' }] });
+    });
+
+    it('includes the summary text when older messages were summarized', async () => {
+      const store = new MemorySessionStore();
+      const session = await store.create();
+      const long = 'x'.repeat(6000);
+      session.messages = [
+        { role: 'user', content: long },
+        { role: 'assistant', content: long },
+        { role: 'user', content: long },
+        { role: 'assistant', content: long },
+      ];
+      await store.save(session);
+      const { provider } = fakeProvider(() => chunks('ok'));
+      const { events, onTrace } = traced();
+
+      await collect(
+        chatTurn({ sessionId: session.id, message: 'q' }, { store, provider, onTrace }),
+      );
+
+      expect(events.at(-1)?.content).toMatchObject({ summary: 'SUMMARY' });
     });
   });
 

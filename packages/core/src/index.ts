@@ -9,6 +9,7 @@ export type {
 } from './types';
 export { runChat, type ChatRequest, type RunChatOptions } from './chat/run-chat';
 export { createTrace, emitTrace, type TraceEvent, type TraceCallback } from './chat/trace';
+export { createSessionLog, renderQrUpload, sessionLogHeader } from './chat/session-log';
 export { encodeChatEvent, readChatEvents } from './chat/events';
 export {
   ChatRequestError,
@@ -27,7 +28,12 @@ export {
   type Session,
   type SessionStore,
 } from './session/store';
-export { chatTurn, SessionBusyError, type ChatTurnOptions } from './session/chat-turn';
+export {
+  chatTurn,
+  SessionBusyError,
+  type BankAction,
+  type ChatTurnOptions,
+} from './session/chat-turn';
 export {
   MAX_USER_INFO_LENGTH,
   USER_INFO_SECTIONS,

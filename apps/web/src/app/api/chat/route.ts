@@ -1,6 +1,7 @@
 import {
   ChatRequestError,
   chatTurn,
+  createSessionLog,
   createTrace,
   emitTrace,
   encodeChatEvent,
@@ -12,6 +13,7 @@ import {
   type ChatTurnRequest,
 } from '@chatbot/core';
 import { knowledge } from '@/lib/knowledge';
+import { appendSessionLog, sessionLogDir } from '@/lib/session-log';
 import { sessions } from '@/lib/sessions';
 
 /**
@@ -24,16 +26,23 @@ import { sessions } from '@/lib/sessions';
  * progress), 500 (misconfigured), 502 (provider failed).
  */
 export async function POST(request: Request): Promise<Response> {
-  const requestId = process.env.CHAT_DEBUG === '1' ? crypto.randomUUID() : undefined;
+  // Session log files (CHAT_LOG_DIR, development) replace the terminal JSON trace (CHAT_DEBUG).
+  const logDir = sessionLogDir();
+  const requestId = logDir || process.env.CHAT_DEBUG === '1' ? crypto.randomUUID() : undefined;
   const headers: Record<string, string> = requestId ? { 'X-Request-Id': requestId } : {};
-  const onTrace = requestId
-    ? createTrace({
-        requestId,
-        captureContent:
-          process.env.CHAT_DEBUG_CONTENT === '1' && process.env.NODE_ENV === 'development',
-        write: (line) => console.info(line),
-      })
-    : undefined;
+  const onTrace = !requestId
+    ? undefined
+    : logDir
+      ? createSessionLog({
+          requestId,
+          write: (sessionId, markdown) => appendSessionLog(logDir, sessionId, markdown),
+        })
+      : createTrace({
+          requestId,
+          captureContent:
+            process.env.CHAT_DEBUG_CONTENT === '1' && process.env.NODE_ENV === 'development',
+          write: (line) => console.info(line),
+        });
   let ended = false;
   const finish = (type: string, status?: number, error?: unknown) => {
     if (ended) return;

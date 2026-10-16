@@ -58,6 +58,13 @@ useChat.uploadQr ── POST /api/payment-qr (multipart "sessionId" + "image") �
 
 Client disconnect aborts summarizing, generation and tools through `request.signal`.
 
+Readable session logs: `CHAT_LOG_DIR` (development only) writes one Markdown file per session,
+`<CHAT_LOG_DIR>/<sessionId>.md`. The chat route passes `createSessionLog` (`chat/session-log.ts`)
+as `onTrace` instead of the terminal JSON trace; it collects one request's trace events (plus
+`turn.start` / `turn.end` from `chatTurn`: message, new session, reply, summary, bank actions) and
+writes one section when the request ends. The QR route appends a `renderQrUpload` section. Full,
+unmasked text; `apps/web/logs/` is git-ignored.
+
 Optional diagnostics: `CHAT_DEBUG=1` creates a request-scoped `onTrace` callback in the chat route,
 adds `X-Request-Id` to the response, and logs JSON through `chat/trace.ts`. The callback follows
 `runChat` into summarization, the provider tool loop and document search. Events include request ID
@@ -95,6 +102,7 @@ repeat (max 5 rounds, then no tools offered) until the model answers with text o
 | `src/instrumentation.ts`                 | Node server startup hook: awaits `knowledge.prepare()`, logs the section count or a retryable failure                                                                                                                                                                      |
 | `src/lib/knowledge.ts`                   | Process-wide `KnowledgeBase` for `knowledge/`, shared by instrumentation and routes, using `getEmbedder(process.env)`                                                                                                                                                      |
 | `src/lib/sessions.ts`                    | Process-wide `MemorySessionStore` shared by the routes (`globalThis`), `sessionView`                                                                                                                                                                                       |
+| `src/lib/session-log.ts`                 | `sessionLogDir()` (`CHAT_LOG_DIR`, development only), `appendSessionLog()` (file header, never throws)                                                                                                                                                                     |
 | `knowledge/`                             | Documents (`.md`, `.txt`) for `search_documents`; read from `process.cwd()/knowledge`                                                                                                                                                                                      |
 | `src/components/Chat.tsx`                | Client component: message list with the summary divider, the error, and the parts below                                                                                                                                                                                    |
 | `src/components/useChat.ts`              | The conversation in the browser: session id in `localStorage`, restore / create on load, `send` (`{ sessionId, message }`, NDJSON events), `uploadQr`, `updateUserInfo` (shows at once, `PUT` per part after 400 ms); moves User Info from the old `localStorage` key once |
@@ -123,6 +131,7 @@ Ships TypeScript source; no build step. Entry points:
 | `src/chat/context.ts`         | History budget: `HISTORY_TOKEN_BUDGET` (4,000), `estimateTokens` (chars / 3), `fitHistory` (newest messages within half the budget, rest summarized into `{ count, content }`), `createSummarizer`                                                                                        |
 | `src/chat/events.ts`          | `encodeChatEvent` (one NDJSON line), `readChatEvents(body)` (browser-safe reader)                                                                                                                                                                                                         |
 | `src/chat/trace.ts`           | `TraceEvent`, `TraceCallback`, `emitTrace` (isolates callback errors), `createTrace` (JSON records, request ID, elapsed time, optional masked content)                                                                                                                                    |
+| `src/chat/session-log.ts`     | `createSessionLog({ requestId, write })` → trace callback that renders one Markdown section per request (step table, details blocks, reply, result); `renderQrUpload`, `sessionLogHeader`                                                                                                 |
 | `src/chat/user-info.ts`       | `USER_INFO_SECTIONS` (key + label of each User Info part), `UserInfo`, `MAX_USER_INFO_LENGTH`                                                                                                                                                                                             |
 | `src/session/store.ts`        | `Session` (history, User Info, pending bank details, summary), `SessionStore` (async, for Redis / a database later), `MemorySessionStore` (24 h idle expiry, 1,000 sessions LRU, history trimmed, `tryLock` / `unlock`)                                                                   |
 | `src/session/chat-turn.ts`    | `chatTurn(turn, { store, ...runChat options })`: one message in a stored conversation (flow above); `SessionBusyError`                                                                                                                                                                    |
@@ -141,6 +150,7 @@ Ships TypeScript source; no build step. Entry points:
 | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `packages/core/src/client.test.ts`               | Nothing reachable from `client.ts` imports server-only code (and the check detects `index.ts`)                                                                                                                                                     |
 | `packages/core/src/chat/trace.test.ts`           | Trace correlation, metadata-only logging, content masking, callback error isolation                                                                                                                                                                |
+| `packages/core/src/chat/session-log.test.ts`     | Session log rendering: steps, search hits, tool results, summary, bank actions, errors, cancel + late reply, no session, QR section                                                                                                                |
 | `apps/web/src/app/api/chat/route.test.ts`        | Request correlation, disabled tracing, development/production content policy, validation/provider/stream errors, cancellation                                                                                                                      |
 | `apps/web/src/app/api/session/route.test.ts`     | Session routes: create, restore, 404 / 400, pending details never returned, partial User Info `PUT`, chat 409 when busy                                                                                                                            |
 | `packages/core/src/chat/run-chat.test.ts`        | `runChat` with a fake provider: prompt, tools, event order, summary, pending / confirm / cancel events, failure before the reply                                                                                                                   |
@@ -161,11 +171,11 @@ Ships TypeScript source; no build step. Entry points:
 
 ## Config
 
-| File                 | Contents                                                                                                                                                                                       |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.env.example`       | Template for `apps/web/.env.local`: `CHAT_PROVIDER`, `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `OPENROUTER_EMBEDDING_MODEL`, `OPENROUTER_IGNORE_PROVIDERS`, `CHAT_DEBUG`, `CHAT_DEBUG_CONTENT` |
-| `package.json`       | Root scripts, delegating to the workspaces                                                                                                                                                     |
-| `tsconfig.base.json` | Shared strict compiler options (incl. `noUncheckedIndexedAccess`)                                                                                                                              |
+| File                 | Contents                                                                                                                                                                                                       |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.env.example`       | Template for `apps/web/.env.local`: `CHAT_PROVIDER`, `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `OPENROUTER_EMBEDDING_MODEL`, `OPENROUTER_IGNORE_PROVIDERS`, `CHAT_DEBUG`, `CHAT_DEBUG_CONTENT`, `CHAT_LOG_DIR` |
+| `package.json`       | Root scripts, delegating to the workspaces                                                                                                                                                                     |
+| `tsconfig.base.json` | Shared strict compiler options (incl. `noUncheckedIndexedAccess`)                                                                                                                                              |
 
 ## Where to change things
 
@@ -189,6 +199,7 @@ Ships TypeScript source; no build step. Entry points:
 | Use core code in the browser                          | Export it from `src/client.ts` (the guard test checks it stays browser-safe)                                                                                  |
 | Change status codes or streaming                      | `apps/web/src/app/api/chat/route.ts`                                                                                                                          |
 | Change trace formatting or capture policy             | `packages/core/src/chat/trace.ts`, enablement and request lifecycle in `apps/web/src/app/api/chat/route.ts`                                                   |
+| Change what the session log files show                | `packages/core/src/chat/session-log.ts` (rendering), `turn.start` / `turn.end` in `session/chat-turn.ts`, file writing in `apps/web/src/lib/session-log.ts`   |
 | Change chat UI behaviour or look                      | `useChat.ts` / components in `apps/web/src/components/`, `globals.css`                                                                                        |
 
 Sample searchable content: `apps/web/knowledge/faq.md` contains a Vietnamese Siêu Hoàn FAQ (17

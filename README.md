@@ -78,6 +78,22 @@ under you).
 
 ## Debugging the agent flow
 
+### Session log files
+
+Set `CHAT_LOG_DIR=logs/sessions` in `apps/web/.env.local` and run `pnpm dev`. Each conversation gets
+its own Markdown file, `apps/web/logs/sessions/<sessionId>.md`, with one section per message or QR
+upload: what the user said, a table of every step with its time offset (history and summary, system
+prompt and tools, model rounds, tool calls with arguments and results, document search hits, bank
+details proposed / saved / cancelled, errors), the system prompt, tool results and summary in
+collapsible blocks, the reply and the result. Open it in an editor with Markdown preview.
+
+The files contain the **full, unmasked conversation** (account and phone numbers included), so they
+are written only in development and `apps/web/logs/` is git-ignored. While `CHAT_LOG_DIR` is set, the
+JSON trace below is not printed to the terminal; responses still carry `X-Request-Id`, which is in
+the file too.
+
+### JSON trace in the terminal
+
 Set `CHAT_DEBUG=1` in `apps/web/.env.local`, restart `pnpm dev`, and send a message. The server
 terminal prints one JSON trace record per step. Match its `requestId` to the chat response's
 `X-Request-Id` header in browser DevTools → Network → `/api/chat`.

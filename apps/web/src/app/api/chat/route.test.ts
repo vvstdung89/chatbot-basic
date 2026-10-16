@@ -1,4 +1,7 @@
 // @vitest-environment node
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TraceEvent } from '@chatbot/core';
 import { POST } from './route';
@@ -103,5 +106,45 @@ describe('chat request traces', () => {
     await response.body!.cancel();
     expect(records.filter((event) => event.type === 'request.abort')).toHaveLength(1);
     expect(records.filter((event) => event.type === 'request.end')).toEqual([]);
+  });
+});
+
+describe('session log files (CHAT_LOG_DIR)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'session-logs-'));
+    vi.stubEnv('CHAT_LOG_DIR', dir);
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  async function chat(body: object) {
+    const response = await POST(
+      new Request('http://localhost/api/chat', { method: 'POST', body: JSON.stringify(body) }),
+    );
+    const lines = (await response.text()).trim().split('\n');
+    return (JSON.parse(lines[0]!) as { sessionId: string }).sessionId;
+  }
+
+  it('writes each turn to <sessionId>.md, unmasked, instead of the terminal (development)', async () => {
+    vi.stubEnv('NODE_ENV', 'development');
+
+    const sessionId = await chat({ message: 'PRIVATE 0123456789' });
+    await chat({ sessionId, message: 'second' });
+
+    expect(readdirSync(dir)).toEqual([`${sessionId}.md`]);
+    const file = readFileSync(join(dir, `${sessionId}.md`), 'utf8');
+    expect(file.startsWith(`# Session ${sessionId}\n`)).toBe(true);
+    expect(file).toContain('> PRIVATE 0123456789');
+    expect(file).toContain('> second');
+    expect(file.match(/^## Turn · /gm)).toHaveLength(2);
+    expect(file).toContain('**Assistant**\n\n> hello');
+    expect(file).toContain('Result: ✅ 200');
+    expect(records).toEqual([]); // nothing printed to the terminal
+  });
+
+  it('writes nothing outside development', async () => {
+    await chat({ message: 'hi' });
+    expect(readdirSync(dir)).toEqual([]);
+    expect(records.length).toBeGreaterThan(0); // CHAT_DEBUG still prints the JSON trace
   });
 });
