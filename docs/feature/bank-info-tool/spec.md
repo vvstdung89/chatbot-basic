@@ -6,7 +6,7 @@ One tool the chat model calls to save the user's bank info (User Payment in the 
 Info), in two cases:
 
 1. The user confirms bank details read from their QR code (replaces the classifier step of
-   `feature/payment-qr/`).
+   `docs/feature/payment-qr/`).
 2. The user asks in text to set or change their bank account ("đổi STK sang Techcombank
    19031234567, tên Nguyễn Văn B").
 

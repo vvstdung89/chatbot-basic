@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { chunkDocument, KnowledgeBase, searchDocumentsTool } from './knowledge';
-import type { Embedder } from './types';
+import type { Embedder } from '../types';
 
 // Fake embedding: how often each vocabulary word appears, so similarity follows shared words.
 const VOCAB = ['refund', 'shipping', 'account'];

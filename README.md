@@ -14,29 +14,32 @@ A streaming chatbot in TypeScript. By default it talks to
 │       ├── knowledge/          Documents (.md/.txt) the assistant can search
 │       └── src/
 │           ├── app/
-│           │   ├── api/chat/route.ts   POST /api/chat, streams the reply as text
+│           ├── app/
+│           │   ├── api/chat/route.ts        POST /api/chat (HTTP around runChat), NDJSON events
 │           │   ├── api/payment-qr/route.ts  POST /api/payment-qr, reads a bank QR image
 │           │   ├── layout.tsx
 │           │   ├── page.tsx
 │           │   └── globals.css
-│           └── components/Chat.tsx     Chat UI (client component)
+│           ├── components/             Chat UI: Chat, Composer, UserInfoSettings, useChat, useUserInfo
+│           ├── lib/knowledge.ts        Shared document index
+│           └── instrumentation.ts      Indexes documents at server startup
 ├── packages/
-│   └── core/                   Provider-agnostic chat logic (@chatbot/core)
+│   └── core/                   Chat engine and features (@chatbot/core)
 │       └── src/
-│           ├── types.ts                ChatMessage, ChatProvider, ChatTool, Embedder
-│           ├── validate.ts             Request body validation
-│           ├── prompt.ts               System prompt (edit it here) + User Info, summary prompt
-│           ├── context.ts              History budget and summarizing older messages
-│           ├── user-info.ts            User Info parts (browser-safe)
-│           ├── vietqr.ts               Bank QR (VietQR) parsing and chat texts (browser-safe)
-│           ├── banks.json              Bank list (BIN → name)
-│           ├── qr-image.ts             Find the QR in an image (sharp + jsqr, server only)
-│           ├── bank-tool.ts            update_bank_info tool (save User Payment)
-│           ├── knowledge.ts            Document search (chunking, embeddings, tool)
+│           ├── index.ts                Server entry
+│           ├── client.ts               Browser entry (@chatbot/core/client)
+│           ├── types.ts                ChatMessage, ChatProvider, ChatTool, ChatEvent, Embedder
+│           ├── chat/                   run-chat.ts (the pipeline), validate.ts, prompt.ts (system
+│           │                           prompt: edit it here), context.ts, events.ts, user-info.ts
+│           ├── rag/                    knowledge.ts: document search (chunking, embeddings, tool)
+│           ├── payment/                vietqr.ts, banks.json, bank-tool.ts, qr-image.ts
 │           └── providers/
 │               ├── index.ts            Provider registry (getProvider, getEmbedder)
 │               ├── openrouter.ts       OpenRouter (default): chat with tool calls, embeddings
 │               └── echo.ts             No-key development provider
+├── docs/
+│   ├── feature/<feature>/      spec.md, plan.md, progress.md per feature
+│   └── bug_report/             one report per bug
 ├── package.json                Root scripts
 ├── pnpm-workspace.yaml
 └── tsconfig.base.json          Shared compiler options
@@ -72,14 +75,15 @@ under you).
 
 ## Scripts
 
-| Command          | What it does                    |
-| ---------------- | ------------------------------- |
-| `pnpm dev`       | Start the web app in dev mode   |
-| `pnpm build`     | Production build of the web app |
-| `pnpm start`     | Serve the production build      |
-| `pnpm test`      | Run unit tests (Vitest)         |
-| `pnpm typecheck` | Type-check every package        |
-| `pnpm format`    | Format with Prettier            |
+| Command          | What it does                                                                           |
+| ---------------- | -------------------------------------------------------------------------------------- |
+| `pnpm dev`       | Start the web app in dev mode                                                          |
+| `pnpm build`     | Production build of the web app                                                        |
+| `pnpm start`     | Serve the production build                                                             |
+| `pnpm test`      | Unit and component tests (Vitest)                                                      |
+| `pnpm test:e2e`  | e2e tests against the production build with the echo provider (run `pnpm build` first) |
+| `pnpm typecheck` | Type-check every package                                                               |
+| `pnpm format`    | Format with Prettier                                                                   |
 
 ## API
 
@@ -100,7 +104,7 @@ Responds `200` with NDJSON (`application/x-ndjson`), one event per line:
 {"type":"payment","payment":"Ngân hàng: ..."}   the update_bank_info tool saved new User Payment
 ```
 
-Roles are `system`, `user` and `assistant`. The server prepends the system prompt from `packages/core/src/prompt.ts` and drops client
+Roles are `system`, `user` and `assistant`. The server prepends the system prompt from `packages/core/src/chat/prompt.ts` and drops client
 `system` messages.
 
 `userInfo` is optional. Its keys are `profile`, `payment`, `purchaseHistory`, `commission` and
@@ -108,13 +112,15 @@ Roles are `system`, `user` and `assistant`. The server prepends the system promp
 prompt as `## User Info ##` sections. The UI fills it from **Settings → User Info**, saved in the
 browser. Errors are `{ "error": "..." }` with:
 
-- `400`: malformed request body
+- `400`: malformed request body, or over the limits: more than 1,000 messages, a message over
+  50,000 characters, or over 150,000 characters in total (the UI sends only the newest messages
+  within these limits)
 - `500`: provider misconfigured (e.g. `OPENROUTER_API_KEY` not set)
 - `502`: the provider failed before replying (invalid key, unknown model, rate limit, ...), or
   summarizing older messages failed
 
 History is kept within 4,000 estimated tokens (`HISTORY_TOKEN_BUDGET` in
-`packages/core/src/context.ts`). Over that, the server keeps the newest messages (about half the
+`packages/core/src/chat/context.ts`). Over that, the server keeps the newest messages (about half the
 budget), summarizes the older ones with the chat model (`SUMMARY_PROMPT`) and puts the summary in
 the system prompt under `## Conversation Summary ##`. This happens on every request over budget,
 so those replies take one extra LLM call. The `summary` event says the first `count` sent messages

@@ -15,5 +15,5 @@
       reply.
 - [x] `.env.example`, `README.md`, `CODEMAP.md` updated
 - [x] Startup indexing added; implementation and verification tracked in
-      `feature/startup-embeddings/`.
+      `docs/feature/startup-embeddings/`.
 - [ ] Owner adds the real policy / FAQ documents and checks answers in the browser

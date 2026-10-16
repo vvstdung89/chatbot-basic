@@ -1,4 +1,4 @@
-import type { ChatTool } from './types';
+import type { ChatTool } from '../types';
 import { findBank, formatPaymentInfo, normalizeAccountName, type PaymentQrInfo } from './vietqr';
 
 export interface UpdateBankInfoToolOptions {

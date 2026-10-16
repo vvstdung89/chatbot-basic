@@ -1,6 +1,6 @@
-import type { ChatMessage, ChatRole } from './types';
+import type { ChatMessage, ChatRole } from '../types';
 import { MAX_USER_INFO_LENGTH, USER_INFO_SECTIONS, type UserInfo } from './user-info';
-import type { PaymentQrInfo } from './vietqr';
+import type { PaymentQrInfo } from '../payment/vietqr';
 
 const ROLES: ReadonlySet<string> = new Set<ChatRole>(['system', 'user', 'assistant']);
 
@@ -9,13 +9,26 @@ export class ChatRequestError extends Error {
   override name = 'ChatRequestError';
 }
 
+/** Longest message accepted, in characters. */
+export const MAX_MESSAGE_LENGTH = 50_000;
+/**
+ * Most history accepted per request. The server reads at most ~26k tokens (~80k characters) of
+ * history anyway (kept messages + summarizer input), so trimHistory changes nothing the model sees.
+ */
+export const MAX_MESSAGES = 1_000;
+export const MAX_HISTORY_LENGTH = 150_000;
+
 /** Validates an untrusted `{ messages: [...] }` body and returns its messages. */
 export function parseMessages(body: unknown): ChatMessage[] {
   const messages = isRecord(body) ? body.messages : undefined;
   if (!Array.isArray(messages) || messages.length === 0) {
     throw new ChatRequestError('Body must be an object with a non-empty "messages" array');
   }
+  if (messages.length > MAX_MESSAGES) {
+    throw new ChatRequestError(`messages must have at most ${MAX_MESSAGES} items`);
+  }
 
+  let length = 0;
   return messages.map((message: unknown, i): ChatMessage => {
     if (!isRecord(message)) {
       throw new ChatRequestError(`messages[${i}] must be an object`);
@@ -27,8 +40,36 @@ export function parseMessages(body: unknown): ChatMessage[] {
     if (typeof content !== 'string') {
       throw new ChatRequestError(`messages[${i}].content must be a string`);
     }
+    if (content.length > MAX_MESSAGE_LENGTH) {
+      throw new ChatRequestError(
+        `messages[${i}].content must be at most ${MAX_MESSAGE_LENGTH} characters`,
+      );
+    }
+    length += content.length;
+    if (length > MAX_HISTORY_LENGTH) {
+      throw new ChatRequestError(`messages must total at most ${MAX_HISTORY_LENGTH} characters`);
+    }
     return { role: role as ChatRole, content };
   });
+}
+
+/**
+ * The newest messages that fit the request limits, for the browser to send; `dropped` is how many
+ * older messages were left out. Stops before a message that is too long to send.
+ */
+export function trimHistory(messages: ChatMessage[]): {
+  messages: ChatMessage[];
+  dropped: number;
+} {
+  let start = messages.length;
+  let length = 0;
+  while (start > 0 && messages.length - start < MAX_MESSAGES) {
+    const content = messages[start - 1]!.content;
+    if (content.length > MAX_MESSAGE_LENGTH || length + content.length > MAX_HISTORY_LENGTH) break;
+    length += content.length;
+    start--;
+  }
+  return { messages: messages.slice(start), dropped: start };
 }
 
 /** Returns the optional `userInfo` sections from an untrusted body, dropping unknown keys. */
@@ -54,6 +95,24 @@ export function parseUserInfo(body: unknown): UserInfo {
     result[key] = text;
   }
   return result;
+}
+
+/** A validated POST /api/chat body. */
+export interface ChatRequest {
+  messages: ChatMessage[];
+  userInfo: UserInfo;
+  /** QR bank details waiting for the user's confirmation. */
+  pendingPayment?: PaymentQrInfo;
+}
+
+/** Validates an untrusted POST /api/chat body; throws ChatRequestError when it is malformed. */
+export function parseChatRequest(body: unknown): ChatRequest {
+  const pendingPayment = parsePendingPayment(body);
+  return {
+    messages: parseMessages(body),
+    userInfo: parseUserInfo(body),
+    ...(pendingPayment && { pendingPayment }),
+  };
 }
 
 const PAYMENT_TEXT_FIELDS = ['bankCode', 'bankShortName', 'bankName', 'accountName'] as const;

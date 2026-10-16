@@ -7,21 +7,33 @@ export type {
   ChatTool,
   Embedder,
 } from './types';
-export { ChatRequestError, parseMessages, parsePendingPayment, parseUserInfo } from './validate';
+export { runChat, type RunChatOptions } from './chat/run-chat';
+export { encodeChatEvent, readChatEvents } from './chat/events';
+export {
+  ChatRequestError,
+  MAX_HISTORY_LENGTH,
+  MAX_MESSAGE_LENGTH,
+  MAX_MESSAGES,
+  parseChatRequest,
+  parseMessages,
+  parsePendingPayment,
+  parseUserInfo,
+  trimHistory,
+  type ChatRequest,
+} from './chat/validate';
 export {
   MAX_USER_INFO_LENGTH,
   USER_INFO_SECTIONS,
   type UserInfo,
   type UserInfoKey,
-} from './user-info';
+} from './chat/user-info';
 export {
   buildSystemPrompt,
   SUMMARY_PROMPT,
   SYSTEM_PROMPT,
-  withPendingPayment,
-  withSummary,
   withSystemPrompt,
-} from './prompt';
+  type PromptContext,
+} from './chat/prompt';
 export {
   findBank,
   formatPaymentInfo,
@@ -31,8 +43,8 @@ export {
   PaymentQrError,
   type Bank,
   type PaymentQrInfo,
-} from './vietqr';
-export { updateBankInfoTool, type UpdateBankInfoToolOptions } from './bank-tool';
+} from './payment/vietqr';
+export { updateBankInfoTool, type UpdateBankInfoToolOptions } from './payment/bank-tool';
 // QR image decoding (sharp, server only) is imported from '@chatbot/core/qr-image'.
 export {
   createSummarizer,
@@ -41,7 +53,7 @@ export {
   HISTORY_TOKEN_BUDGET,
   type FitHistoryOptions,
   type HistorySummary,
-} from './context';
+} from './chat/context';
 export {
   chunkDocument,
   KnowledgeBase,
@@ -49,7 +61,7 @@ export {
   type DocumentChunk,
   type KnowledgeBaseOptions,
   type SearchResult,
-} from './knowledge';
+} from './rag/knowledge';
 export {
   createOpenRouterEmbedder,
   DEFAULT_OPENROUTER_EMBEDDING_MODEL,

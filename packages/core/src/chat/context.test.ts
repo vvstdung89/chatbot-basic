@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createSummarizer, estimateTokens, fitHistory } from './context';
 import { SUMMARY_PROMPT } from './prompt';
-import type { ChatMessage, ChatOptions, ChatProvider } from './types';
+import type { ChatMessage, ChatOptions, ChatProvider } from '../types';
 
 // 3 characters ≈ 1 token, so `chars` 30 is 10 tokens.
 const msg = (role: 'user' | 'assistant', chars: number, mark = ''): ChatMessage => ({

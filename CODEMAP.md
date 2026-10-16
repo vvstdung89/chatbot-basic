@@ -6,113 +6,120 @@ move or rename code.
 ## Request flow
 
 ```
-Chat.tsx ── POST /api/chat { messages, userInfo, pendingPayment? } ──▶ route.ts
-                                             1. parseMessages(body),
-                                                parseUserInfo(body),
-                                                parsePendingPayment(body)    validate.ts        → 400
-                                             2. getProvider(process.env)     providers/index.ts → 500
-                                             3. fitHistory(messages): over
-                                                4,000 tokens → summarize
-                                                older ones (extra LLM call)  context.ts         → 502
-                                                withSystemPrompt(kept,
-                                                withPendingPayment(withSummary(
-                                                buildSystemPrompt(userInfo),
-                                                summary), pendingPayment))   prompt.ts
-                                             4. tools = [search_documents
-                                                if knowledge/ has files,     knowledge.ts
-                                                update_bank_info]            bank-tool.ts
-                                             5. await first chunk of
-                                                provider.streamChat(messages,
-                                                { signal, tools })           providers/<name>   → 502
-                                             6. stream NDJSON ChatEvents (pull-based):
-                                                summary first, tool events
-                                                before the next text chunk
-Chat.tsx ◀── {"type":"summary"} ── divider before message #count
-         ◀── {"type":"text"}    ── appended to the last assistant message
-         ◀── {"type":"payment"} ── userInfo.payment replaced, pendingPayment cleared
+useChat.send ── POST /api/chat { messages: trimHistory(history), userInfo, pendingPayment? }
+  ▶ app/api/chat/route.ts (HTTP only)
+      parseChatRequest(body)                       chat/validate.ts        → 400
+      getProvider(process.env)                     providers/index.ts      → 500
+      runChat(request, { provider, knowledge })    chat/run-chat.ts
+        1. fitHistory: over 4,000 tokens →
+           summarize older messages (LLM call)     chat/context.ts
+        2. buildSystemPrompt({ userInfo, summary,
+           pendingPayment }) + withSystemPrompt    chat/prompt.ts
+        3. tools: search_documents (if documents)  rag/knowledge.ts
+                  update_bank_info                 payment/bank-tool.ts
+        4. provider.streamChat(messages, tools)    providers/<name>
+           yields nothing until the first result, so failures reject the first next() → 502
+        5. ChatEvents: summary first, tool events before the next text chunk
+      encodeChatEvent → NDJSON stream             chat/events.ts
+  ◀ readChatEvents(res.body) in useChat:
+      {"type":"summary"} → divider before message #(dropped + count)
+      {"type":"text"}    → appended to the last assistant message
+      {"type":"payment"} → userInfo.payment replaced, pendingPayment cleared
 ```
 
 Bank QR upload (composer **QR** button):
 
 ```
-Chat.tsx ── POST /api/payment-qr (multipart "image") ──▶ payment-qr/route.ts
-                                             1. type PNG/JPEG/WebP, ≤ 5 MB             → 400
-                                             2. decodeQrImage: sharp → jsqr  qr-image.ts → 422
-                                             3. parseVietQR: EMVCo + CRC +
-                                                banks.json                   vietqr.ts   → 422
-Chat.tsx ◀── PaymentQrInfo ── chat gets user "[Ảnh mã QR ngân hàng]" + assistant
-             paymentReadBack(info); info kept as pendingPayment for the next messages
+useChat.uploadQr ── POST /api/payment-qr (multipart "image") ▶ app/api/payment-qr/route.ts
+      type PNG/JPEG/WebP, ≤ 5 MB                                            → 400
+      decodeQrImage: sharp → jsqr                  payment/qr-image.ts      → 422
+      parseVietQR: EMVCo + CRC + banks.json        payment/vietqr.ts        → 422
+  ◀ PaymentQrInfo: chat gets user "[Ảnh mã QR ngân hàng]" + assistant paymentReadBack(info);
+    info kept as pendingPayment for the next messages
 ```
 
-Client disconnect aborts generation through `request.signal` → `ChatOptions.signal`.
+Client disconnect aborts summarizing, generation and tools through `request.signal`.
 
 At Node server startup, `src/instrumentation.ts` awaits `knowledge.prepare()` before requests
 are accepted. `src/lib/knowledge.ts` keeps the instance on `globalThis` so the startup hook and
 chat route reuse one in-memory index per process. Startup errors are logged; search retries.
 Document changes trigger reindexing on the next search; a process restart prepares a fresh index.
 
-Tool loop inside `OpenRouterProvider.streamChat` (step 5):
+Tool loop inside `OpenRouterProvider.streamChat` (step 4):
 
 ```
-model streams text ───────▶ yielded to the client (leading blank lines dropped)
-model streams tool_calls ─▶ runTool() ─▶ search_documents.run({ query })
-                                         KnowledgeBase.search: embed query, cosine vs. sections
-                         ◀─ tool result (top 4 "[file › heading] text") appended to history
+model streams text ───────▶ yielded (leading blank lines dropped)
+model streams tool_calls ─▶ runTool() ─▶ e.g. search_documents.run({ query })
+                         ◀─ tool result appended to history
 repeat (max 5 rounds, then no tools offered) until the model answers with text only
 ```
 
 ## apps/web: Next.js app (`@chatbot/web`)
 
-| File                              | Contents                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/app/page.tsx`                | Home page: heading + `<Chat />`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `src/app/layout.tsx`              | Root HTML shell, page metadata, imports `globals.css`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `src/app/globals.css`             | All styles: light/dark theme vars, `.page`, `.chat`, `.messages`, `.settings`, `.message` (+ `.user`, `.system`), `.error`, `.composer`                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `src/app/api/chat/route.ts`       | `POST` handler (flow above), using the shared `knowledge` from `src/lib/knowledge.ts`. `toTextStream` turns the provider iterator into a `ReadableStream`; `errorMessage` formats errors                                                                                                                                                                                                                                                                                                                                                                                    |
-| `src/app/api/payment-qr/route.ts` | `POST` bank QR upload (flow above): validates the file, `decodeQrImage`, `parseVietQR`; image kept in memory only                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `src/instrumentation.ts`          | Node server startup hook: awaits `knowledge.prepare()`, logs the indexed section count or a retryable failure                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `src/lib/knowledge.ts`            | Process-wide `KnowledgeBase` shared by instrumentation and routes, using `getEmbedder(process.env)`                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `knowledge/`                      | Documents (`.md`, `.txt`) for `search_documents`; read from `process.cwd()/knowledge`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `src/components/Chat.tsx`         | Client component. State: `messages`, `input`, `pending`, `error`, `userInfo`, `summary`, `pendingPayment`. Settings panel renders one User Info text box per `USER_INFO_SECTIONS` entry, saved to `localStorage` (`chatbot.userInfo`). `send` posts the full history plus `userInfo` and `pendingPayment`, reads the NDJSON reply line by line: `text` into the last assistant message, `summary` into the collapsible divider, `payment` into `userInfo.payment`; keeps a partial reply if the stream fails. `uploadQr` posts the QR image and adds the read-back messages |
-| `next.config.ts`                  | `transpilePackages: ['@chatbot/core']`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `tsconfig.json`                   | Path alias `@/*` → `src/*`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| File                                  | Contents                                                                                                                              |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/app/page.tsx`                    | Home page: heading + `<Chat />`                                                                                                       |
+| `src/app/layout.tsx`                  | Root HTML shell, page metadata, imports `globals.css`                                                                                 |
+| `src/app/globals.css`                 | All styles: theme vars, `.page`, `.chat`, `.messages`, `.settings`, `.message`, `.history-summary`, `.error`, `.composer`             |
+| `src/app/api/chat/route.ts`           | `POST`: `parseChatRequest`, `getProvider`, `runChat`, NDJSON response (`toNdjsonStream`); 400 / 500 / 502                             |
+| `src/app/api/payment-qr/route.ts`     | `POST` bank QR upload: validates the file, `decodeQrImage`, `parseVietQR`; image kept in memory only                                  |
+| `src/instrumentation.ts`              | Node server startup hook: awaits `knowledge.prepare()`, logs the section count or a retryable failure                                 |
+| `src/lib/knowledge.ts`                | Process-wide `KnowledgeBase` for `knowledge/`, shared by instrumentation and routes, using `getEmbedder(process.env)`                 |
+| `knowledge/`                          | Documents (`.md`, `.txt`) for `search_documents`; read from `process.cwd()/knowledge`                                                 |
+| `src/components/Chat.tsx`             | Client component: message list with the summary divider, the error, and the parts below                                               |
+| `src/components/useChat.ts`           | Conversation state (`messages`, `pending`, `error`, `summary`, `pendingPayment`); `send` (trimmed history, NDJSON events), `uploadQr` |
+| `src/components/useUserInfo.ts`       | User Info state saved in `localStorage` (`chatbot.userInfo`); `updateUserInfo` updates the latest value                               |
+| `src/components/UserInfoSettings.tsx` | Settings panel: one text box per `USER_INFO_SECTIONS` entry                                                                           |
+| `src/components/Composer.tsx`         | Message input (max `MAX_MESSAGE_LENGTH`), Send, and the QR button / file picker                                                       |
+| `next.config.ts`                      | `transpilePackages: ['@chatbot/core']`                                                                                                |
+| `vitest.config.ts`                    | Web tests: jsdom, `@/` alias                                                                                                          |
+| `tsconfig.json`                       | Path alias `@/*` → `src/*`                                                                                                            |
 
-## packages/core: provider-agnostic logic (`@chatbot/core`)
+## packages/core: chat engine and features (`@chatbot/core`)
 
-Ships TypeScript source; no build step. Entry points: `@chatbot/core` → `src/index.ts` (server), `@chatbot/core/user-info` → `src/user-info.ts` and `@chatbot/core/vietqr` → `src/vietqr.ts` (browser-safe, used by the UI), `@chatbot/core/qr-image` → `src/qr-image.ts` (server only, sharp).
+Ships TypeScript source; no build step. Entry points:
 
-| File                          | Contents                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/index.ts`                | Public API; the server imports only from here                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `src/types.ts`                | `ChatRole`, `ChatMessage`, `ChatOptions` (`signal`, `tools`), `ChatProvider` (`name`, `streamChat(messages, options) → AsyncIterable<string>`), `ChatTool` (`name`, `description`, `parameters` JSON Schema, `run(args, signal)`), `Embedder` , `ChatEvent` (NDJSON line of `/api/chat`)                                                                                                                                                                                              |
-| `src/validate.ts`             | `parseMessages(body)`, `parseUserInfo(body)` and `parsePendingPayment(body)` validate an untrusted `{ messages, userInfo?, pendingPayment? }` body; `ChatRequestError` carries a message safe to show the client                                                                                                                                                                                                                                                                      |
-| `src/user-info.ts`            | `USER_INFO_SECTIONS` (key + label of each User Info part), `UserInfo` type, `MAX_USER_INFO_LENGTH`. No Node imports                                                                                                                                                                                                                                                                                                                                                                   |
-| `src/prompt.ts`               | `SYSTEM_PROMPT` (the guardrail text, edit it here); `buildSystemPrompt(userInfo)` appends non-blank User Info sections under `## User Info ##`; `SUMMARY_PROMPT` (summarizer instructions) and `withSummary(prompt, summary)` (`## Conversation Summary ##`); `withPendingPayment(prompt, pending)` (`## Pending Bank Details ##`: QR details awaiting confirmation, how to save them); `withSystemPrompt(messages, prompt)` puts the prompt first and drops client `system` messages |
-| `src/context.ts`              | History budget: `HISTORY_TOKEN_BUDGET` (4,000), `estimateTokens` (chars / 3), `fitHistory(messages, { summarize })` keeps the newest messages within half the budget (from a user message) and summarizes the rest into `{ count, content }`; `createSummarizer(provider)`                                                                                                                                                                                                            |
-| `src/vietqr.ts`               | Bank QR (VietQR/EMVCo): `parseVietQR(payload)` (CRC check, BIN/account from template GUID `A000000727`, name from tag 59, `banks.json` lookup), `PaymentQrError`, `normalizeAccountName`, chat texts `QR_UPLOAD_MESSAGE` / `paymentReadBack` / `paymentReadFailed`, `formatPaymentInfo` (User Payment text), `findBank` (by code / short name / name / BIN, ignoring case and diacritics), `PaymentQrInfo`. No Node imports                                                           |
-| `src/banks.json`              | 75 banks (`bin`, `code`, `shortName`, `name`) from api.vietqr.io/v2/banks, names in NFC                                                                                                                                                                                                                                                                                                                                                                                               |
-| `src/qr-image.ts`             | `decodeQrImage(image)`: sharp (EXIF rotate, ≤ 1600 px, RGBA) + jsqr → QR text or null. Server only                                                                                                                                                                                                                                                                                                                                                                                    |
-| `src/bank-tool.ts`            | `updateBankInfoTool({ pending, onUpdate })` → the `update_bank_info` tool: `source "qr"` saves the pending QR details (bank and account never from the model), `source "text"` saves typed details after `findBank`; errors go back to the model, nothing saved                                                                                                                                                                                                                       |
-| `src/knowledge.ts`            | `chunkDocument` (split by heading, then paragraphs ≤ 1,500 chars), `KnowledgeBase` (`files()`, `prepare()` to build the index ahead of searches, `search(query)`; in-memory index rebuilt when files change), `searchDocumentsTool(kb)` → the `search_documents` tool                                                                                                                                                                                                                 |
-| `src/providers/index.ts`      | Provider registry (`Map` of name → factory from env), `getProvider(env)` picks by `CHAT_PROVIDER` (default `openrouter`), `getEmbedder(env)` (OpenRouter embeddings), `requireEnv`                                                                                                                                                                                                                                                                                                    |
-| `src/providers/openrouter.ts` | `OpenRouterProvider`: `openai` SDK pointed at OpenRouter; yields `delta.content` only (reasoning is skipped); tool-call loop (`MAX_TOOL_ROUNDS`, `runTool` turns failures into error results). `createOpenRouterEmbedder`. `DEFAULT_OPENROUTER_MODEL`, `DEFAULT_OPENROUTER_EMBEDDING_MODEL`                                                                                                                                                                                           |
-| `src/providers/echo.ts`       | `EchoProvider`: streams `You said: …` word by word with a delay; needs no API key; ignores tools                                                                                                                                                                                                                                                                                                                                                                                      |
+- `@chatbot/core` → `src/index.ts`: everything, for server code.
+- `@chatbot/core/client` → `src/client.ts`: browser-safe code only. `client.test.ts` fails if
+  anything reachable from it imports `node:*`, `openai`, `sharp` or `jsqr`.
+- `@chatbot/core/qr-image` → `src/payment/qr-image.ts`: server only (sharp), separate so other
+  routes don't load sharp.
+
+| File                          | Contents                                                                                                                                                                                                                                                                                  |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/types.ts`                | `ChatRole`, `ChatMessage`, `ChatOptions` (`signal`, `tools`), `ChatProvider`, `ChatTool` (`name`, `description`, `parameters` JSON Schema, `run`), `Embedder`, `ChatEvent`                                                                                                                |
+| `src/chat/run-chat.ts`        | `runChat(request, { provider, knowledge?, signal })` → `AsyncGenerator<ChatEvent>`: the chat pipeline (flow above). Request-level features plug in here                                                                                                                                   |
+| `src/chat/validate.ts`        | `parseChatRequest` (→ `ChatRequest`), `parseMessages` (limits `MAX_MESSAGES`, `MAX_MESSAGE_LENGTH`, `MAX_HISTORY_LENGTH`), `parseUserInfo`, `parsePendingPayment`, `trimHistory`, `ChatRequestError`                                                                                      |
+| `src/chat/prompt.ts`          | `SYSTEM_PROMPT` (the guardrail text, edit it here), `SUMMARY_PROMPT`; `buildSystemPrompt({ userInfo, summary, pendingPayment })`: prompt + sections in order (User Info, Conversation Summary, Pending Bank Details); `withSystemPrompt` puts it first and drops client `system` messages |
+| `src/chat/context.ts`         | History budget: `HISTORY_TOKEN_BUDGET` (4,000), `estimateTokens` (chars / 3), `fitHistory` (newest messages within half the budget, rest summarized into `{ count, content }`), `createSummarizer`                                                                                        |
+| `src/chat/events.ts`          | `encodeChatEvent` (one NDJSON line), `readChatEvents(body)` (browser-safe reader)                                                                                                                                                                                                         |
+| `src/chat/user-info.ts`       | `USER_INFO_SECTIONS` (key + label of each User Info part), `UserInfo`, `MAX_USER_INFO_LENGTH`                                                                                                                                                                                             |
+| `src/rag/knowledge.ts`        | `chunkDocument` (by heading, then paragraphs ≤ 1,500 chars), `KnowledgeBase` (`files()`, `prepare()`, `search(query)`; in-memory index rebuilt when files change), `searchDocumentsTool`                                                                                                  |
+| `src/payment/vietqr.ts`       | VietQR/EMVCo: `parseVietQR` (CRC check, BIN/account from GUID `A000000727`, name from tag 59), `PaymentQrError`, `findBank`, `normalizeAccountName`, `formatPaymentInfo`, chat texts `QR_UPLOAD_MESSAGE` / `paymentReadBack` / `paymentReadFailed`, `PaymentQrInfo`                       |
+| `src/payment/banks.json`      | 75 banks (`bin`, `code`, `shortName`, `name`) from api.vietqr.io/v2/banks, names in NFC                                                                                                                                                                                                   |
+| `src/payment/bank-tool.ts`    | `updateBankInfoTool({ pending, onUpdate })` → `update_bank_info`: `source "qr"` saves the pending QR details (bank and account never from the model), `source "text"` after `findBank`                                                                                                    |
+| `src/payment/qr-image.ts`     | `decodeQrImage(image)`: sharp (EXIF rotate, ≤ 1600 px, RGBA) + jsqr → QR text or null                                                                                                                                                                                                     |
+| `src/providers/index.ts`      | Provider registry, `getProvider(env)` by `CHAT_PROVIDER` (default `openrouter`), `getEmbedder(env)`, `requireEnv`                                                                                                                                                                         |
+| `src/providers/openrouter.ts` | `OpenRouterProvider` (`openai` SDK; answer text only; tool-call loop with `MAX_TOOL_ROUNDS`, `runTool`), `createOpenRouterEmbedder`, default model ids                                                                                                                                    |
+| `src/providers/echo.ts`       | `EchoProvider`: streams `You said: …`; no API key; ignores tools                                                                                                                                                                                                                          |
 
 ## Tests (Vitest, `pnpm test`)
 
-| File                                             | Covers                                                                                                                            |
-| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| `packages/core/src/validate.test.ts`             | `parseMessages`, `parseUserInfo`, `parsePendingPayment`                                                                           |
-| `packages/core/src/prompt.test.ts`               | `withSystemPrompt`, `buildSystemPrompt`, `withSummary`                                                                            |
-| `packages/core/src/context.test.ts`              | `estimateTokens`, `fitHistory` (fake summarizer, small budgets), `createSummarizer`                                               |
-| `packages/core/src/vietqr.test.ts`               | `parseVietQR` on payloads with independently computed CRCs, chat texts, `formatPaymentInfo`                                       |
-| `packages/core/src/qr-image.test.ts`             | `decodeQrImage` on PNGs made with `qrcode`, a rotated JPEG photo, a blank image, non-image data                                   |
-| `packages/core/src/bank-tool.test.ts`            | `updateBankInfoTool` for QR and text sources, errors, `onUpdate` only on success                                                  |
-| `packages/core/src/knowledge.test.ts`            | `chunkDocument`, `KnowledgeBase` (preparation, reuse, concurrency, retry, empty folders, document changes), `searchDocumentsTool` |
-| `packages/core/src/providers/providers.test.ts`  | `EchoProvider`, `getProvider` env handling, `getEmbedder`                                                                         |
-| `packages/core/src/providers/openrouter.test.ts` | `OpenRouterProvider` (incl. tool loop) and `createOpenRouterEmbedder` against a local fake server (no network)                    |
-
-`apps/web` has no tests yet.
+| File                                             | Covers                                                                                                               |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `packages/core/src/client.test.ts`               | Nothing reachable from `client.ts` imports server-only code (and the check detects `index.ts`)                       |
+| `packages/core/src/chat/run-chat.test.ts`        | `runChat` with a fake provider: prompt, tools, event order, summary, QR save, failure before the reply               |
+| `packages/core/src/chat/events.test.ts`          | `encodeChatEvent` / `readChatEvents`, with lines and UTF-8 characters split across chunks                            |
+| `packages/core/src/chat/validate.test.ts`        | Body parsing, request limits, `trimHistory`                                                                          |
+| `packages/core/src/chat/prompt.test.ts`          | `withSystemPrompt`, `buildSystemPrompt` sections and order                                                           |
+| `packages/core/src/chat/context.test.ts`         | `estimateTokens`, `fitHistory` (fake summarizer, small budgets), `createSummarizer`                                  |
+| `packages/core/src/rag/knowledge.test.ts`        | `chunkDocument`, `KnowledgeBase` (preparation, reuse, concurrency, retry, changes), `searchDocumentsTool`            |
+| `packages/core/src/payment/vietqr.test.ts`       | `parseVietQR` on payloads with independently computed CRCs, `findBank`, chat texts, `formatPaymentInfo`              |
+| `packages/core/src/payment/qr-image.test.ts`     | `decodeQrImage` on generated PNGs, a rotated JPEG photo, a blank image, non-image data                               |
+| `packages/core/src/payment/bank-tool.test.ts`    | `updateBankInfoTool` for QR and text sources, errors                                                                 |
+| `packages/core/src/providers/providers.test.ts`  | `EchoProvider`, `getProvider`, `getEmbedder`                                                                         |
+| `packages/core/src/providers/openrouter.test.ts` | `OpenRouterProvider` (incl. tool loop) and the embedder against a local fake server                                  |
+| `apps/web/src/components/Chat.test.tsx`          | The chat UI with a stubbed `fetch`: sending, streaming, trimming + divider, QR flow, User Info edits during a stream |
 
 ## Config
 
@@ -124,25 +131,28 @@ Ships TypeScript source; no build step. Entry points: `@chatbot/core` → `src/i
 
 ## Where to change things
 
-| To…                                                   | Edit                                                                                                                            |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Add an LLM provider                                   | New `packages/core/src/providers/<name>.ts`, register it in `providers/index.ts`                                                |
-| Change the default model                              | `DEFAULT_OPENROUTER_MODEL` in `openrouter.ts`, plus `.env.example` and README                                                   |
-| Change the message shape or roles                     | `types.ts` and `validate.ts`                                                                                                    |
-| Change the guardrail prompt                           | `SYSTEM_PROMPT` in `packages/core/src/prompt.ts`                                                                                |
-| Change the history budget or summary style            | `HISTORY_TOKEN_BUDGET` in `context.ts`, `SUMMARY_PROMPT` in `prompt.ts`                                                         |
-| Change QR chat texts or how the model saves bank info | `paymentReadBack` / `paymentReadFailed` in `vietqr.ts`, tool description in `bank-tool.ts`, `withPendingPayment` in `prompt.ts` |
-| Refresh the bank list                                 | Re-fetch https://api.vietqr.io/v2/banks into `packages/core/src/banks.json` (`bin`, `code`, `shortName`, `name`, NFC)           |
-| Add or edit searchable documents                      | Files in `apps/web/knowledge/`                                                                                                  |
-| Change how documents are split, or how many results   | `MAX_CHUNK_LENGTH` / `search({ limit })` in `knowledge.ts`                                                                      |
-| Add another tool                                      | Return a `ChatTool` (like `searchDocumentsTool`) and add it to `tools` in `route.ts`                                            |
-| Add or rename a User Info part                        | `USER_INFO_SECTIONS` in `packages/core/src/user-info.ts` (UI and prompt follow)                                                 |
-| Change status codes or streaming                      | `apps/web/src/app/api/chat/route.ts`                                                                                            |
-| Change chat UI behaviour or look                      | `Chat.tsx`, `globals.css`                                                                                                       |
+| To…                                                   | Edit                                                                                                                                                         |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Change the guardrail prompt                           | `SYSTEM_PROMPT` in `packages/core/src/chat/prompt.ts`                                                                                                        |
+| Add a feature to the chat request                     | Body field in `chat/validate.ts` (`ChatRequest`), prompt section in `buildSystemPrompt`, tools / events in `runChat`                                         |
+| Add another tool                                      | A `ChatTool` in its feature folder (like `payment/bank-tool.ts`), added to `tools` in `chat/run-chat.ts`                                                     |
+| Add a new kind of event for the browser               | `ChatEvent` in `types.ts`, emit it in `runChat`, handle it in `useChat.ts`                                                                                   |
+| Add an LLM provider                                   | New `packages/core/src/providers/<name>.ts`, register it in `providers/index.ts`                                                                             |
+| Change the default model                              | `DEFAULT_OPENROUTER_MODEL` in `openrouter.ts`, plus `.env.example` and README                                                                                |
+| Change the history budget or summary style            | `HISTORY_TOKEN_BUDGET` in `chat/context.ts`, `SUMMARY_PROMPT` in `chat/prompt.ts`                                                                            |
+| Change request limits                                 | `MAX_MESSAGES`, `MAX_MESSAGE_LENGTH`, `MAX_HISTORY_LENGTH` in `chat/validate.ts`                                                                             |
+| Change QR chat texts or how the model saves bank info | `paymentReadBack` / `paymentReadFailed` in `payment/vietqr.ts`, tool description in `payment/bank-tool.ts`, Pending Bank Details section in `chat/prompt.ts` |
+| Refresh the bank list                                 | Re-fetch https://api.vietqr.io/v2/banks into `payment/banks.json` (`bin`, `code`, `shortName`, `name`, NFC)                                                  |
+| Add or edit searchable documents                      | Files in `apps/web/knowledge/`                                                                                                                               |
+| Change how documents are split, or how many results   | `MAX_CHUNK_LENGTH` / `search({ limit })` in `rag/knowledge.ts`                                                                                               |
+| Add or rename a User Info part                        | `USER_INFO_SECTIONS` in `chat/user-info.ts` (UI and prompt follow)                                                                                           |
+| Use core code in the browser                          | Export it from `src/client.ts` (the guard test checks it stays browser-safe)                                                                                 |
+| Change status codes or streaming                      | `apps/web/src/app/api/chat/route.ts`                                                                                                                         |
+| Change chat UI behaviour or look                      | `useChat.ts` / components in `apps/web/src/components/`, `globals.css`                                                                                       |
 
 Sample searchable content: `apps/web/knowledge/faq.md` contains a Vietnamese Siêu Hoàn FAQ (17
 questions). Its figures are invented and not marked as samples, so the assistant states them as
 policy: replace them with confirmed policies before real use.
 
-Feature specs, plans and progress notes live in `feature/<feature>/` (`spec.md`, `plan.md`,
-`progress.md`); bug reports in `bug_report/<bug>.md`. See `AGENTS.md`.
+Feature specs, plans and progress notes live in `docs/feature/<feature>/` (`spec.md`, `plan.md`,
+`progress.md`); bug reports in `docs/bug_report/<bug>.md`. See `AGENTS.md`.

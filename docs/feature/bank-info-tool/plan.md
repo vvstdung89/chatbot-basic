@@ -11,6 +11,6 @@
 4. `route.ts`: NDJSON event stream (`summary`, `text`, `payment`), tool events queued and flushed
    before the next text chunk; pass `update_bank_info` with the RAG tool.
 5. `Chat.tsx`: read NDJSON lines; apply `summary` and `payment` events.
-6. Update `feature/payment-qr/` docs, `README.md` (API), `CODEMAP.md`.
+6. Update `docs/feature/payment-qr/` docs, `README.md` (API), `CODEMAP.md`.
 7. `pnpm test`, `pnpm typecheck`, `pnpm build`; live run: QR confirm, text update, decline,
    unknown bank. Commit.

@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ChatTool, Embedder } from './types';
+import type { ChatTool, Embedder } from '../types';
 
 const DOCUMENT_FILE = /\.(md|txt)$/i;
 const MAX_CHUNK_LENGTH = 1500;

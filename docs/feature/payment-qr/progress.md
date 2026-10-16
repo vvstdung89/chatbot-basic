@@ -26,4 +26,4 @@
 - [x] `README.md`, `CODEMAP.md` updated
 - [ ] Owner checks the flow in the browser with a real bank QR photo
 - [x] Confirmation moved from the classifier step to the `update_bank_info` tool
-      (`feature/bank-info-tool/`); spec updated
+      (`docs/feature/bank-info-tool/`); spec updated

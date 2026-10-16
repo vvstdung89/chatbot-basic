@@ -35,7 +35,7 @@ Composer [QR] ──▶ pick an image (PNG / JPEG / WebP, max 5 MB)
       request until it is confirmed, declined or replaced by a new upload
   ──▶ POST /api/chat with pendingPayment: the system prompt lists the pending details; when the
       user confirms, the model calls update_bank_info with source "qr" (see
-      feature/bank-info-tool/, which replaced the earlier classifier step)
+      docs/feature/bank-info-tool/, which replaced the earlier classifier step)
   ──▶ "payment" event in the reply stream → User Payment (localStorage) replaced, pending cleared
 ```
 

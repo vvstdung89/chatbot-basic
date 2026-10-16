@@ -6,30 +6,40 @@ Having [CODEMAP.md](CODEMAP.md) to guide through the source code.
 
 ## Where documents go
 
-Use only these two folders for working documents. Do not create others (no `docs/`, no single-file notes).
+All working documents live under `docs/`, in these two folders only. Do not create other
+document folders or single-file notes (e.g. no top-level `feature/` or `bug_report/`).
 
 ```
-feature/<feature-name>/      one folder per feature, kebab-case (e.g. feature/context-history/)
-  spec.md                    what and why: behaviour, decisions, out of scope
-  plan.md                    implementation steps
-  progress.md                checklist of done / open milestones
-bug_report/<bug-name>.md     one file per bug: symptom, root cause, fix
+docs/
+  feature/<feature-name>/      one folder per feature, kebab-case (e.g. docs/feature/context-history/)
+    spec.md                    what and why: behaviour, decisions, out of scope
+    plan.md                    implementation steps
+    progress.md                checklist of done / open milestones
+  bug_report/<bug-name>.md     one file per bug: symptom, root cause, fix
 ```
+
+`CODEMAP.md`, `README.md` and `AGENTS.md` stay at the repository root.
 
 If a folder for the feature already exists, update it instead of creating a new one.
 
 ## When add feature or modify code
 
-- Create `feature/<feature-name>/spec.md`, `plan.md` and `progress.md` before coding
+- Create `docs/feature/<feature-name>/spec.md`, `plan.md` and `progress.md` before coding
 - Update `progress.md` after finishing major milestone
 - Update the spec/plan, if you change/add during your work
 - Update [CODEMAP.md](CODEMAP.md)
+- Apply TDD to test feature, with unitest, integraton test, e2e test
 
 ## When fix a bug
 
-- Inspect the bug first, write `bug_report/<bug-name>.md` with the root cause
+- Inspect the bug first, write `docs/bug_report/<bug-name>.md` with the root cause
 - Apply TDD, create test first
 - Fix and then update the bug report with the fix
+
+## Version control
+
+- When finish implementing, commit your current work.
+- Prefer modify on current worktree, but If more than 2 agents working on the project, use another worktree to avoid confliction. The instruction for merge will be called later
 
 ## Important note
 

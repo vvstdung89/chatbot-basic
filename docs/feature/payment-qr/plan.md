@@ -26,4 +26,4 @@
     generated VietQR image, confirm in Vietnamese, check the header and the reply.
 
 > Steps 6, 8 and 9 (classifier step, `X-Payment-Update` header) were later replaced by the
-> `update_bank_info` tool and the NDJSON event stream: see `feature/bank-info-tool/`.
+> `update_bank_info` tool and the NDJSON event stream: see `docs/feature/bank-info-tool/`.

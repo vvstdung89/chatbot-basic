@@ -1,5 +1,5 @@
 import { SUMMARY_PROMPT } from './prompt';
-import type { ChatMessage, ChatProvider } from './types';
+import type { ChatMessage, ChatProvider } from '../types';
 
 /** Token budget for the conversation history sent to the model (system prompt not counted). */
 export const HISTORY_TOKEN_BUDGET = 4000;

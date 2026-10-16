@@ -20,6 +20,6 @@
 - [x] The model first repeated the name with diacritics ("TRẦN THỊ BÌNH") while TRAN THI BINH was
       saved; the tool description now asks to show the saved details exactly as returned, and the
       rerun matched
-- [x] `README.md`, `CODEMAP.md`, `feature/payment-qr/` updated
+- [x] `README.md`, `CODEMAP.md`, `docs/feature/payment-qr/` updated
 - [x] Commit
 - [ ] Owner checks the flow in the browser
