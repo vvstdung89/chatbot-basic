@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useRef, useState, type FormEvent } from 'react';
-import type { ChatMessage } from '@chatbot/core';
+import { Fragment, useEffect, useRef, useState, type FormEvent } from 'react';
+import type { ChatMessage, HistorySummary } from '@chatbot/core';
 import {
   MAX_USER_INFO_LENGTH,
   USER_INFO_SECTIONS,
@@ -17,6 +17,8 @@ export function Chat() {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [userInfo, setUserInfo] = useState<UserInfo>({});
+  // Where the server summarized older messages: they stay visible, the model sees the summary.
+  const [summary, setSummary] = useState<HistorySummary | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -64,6 +66,8 @@ export function Chat() {
         const data = (await res.json().catch(() => null)) as { error?: string } | null;
         throw new Error(data?.error ?? `Request failed (${res.status})`);
       }
+      const header = res.headers.get('X-Chat-Summary');
+      setSummary(header ? (JSON.parse(decodeURIComponent(header)) as HistorySummary) : null);
 
       const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
       for (;;) {
@@ -104,9 +108,15 @@ export function Chat() {
       <div className="messages" aria-live="polite">
         {messages.length === 0 && <p className="empty">Send a message to start.</p>}
         {messages.map((m, i) => (
-          <div key={i} className={`message ${m.role}`}>
-            {m.content || '…'}
-          </div>
+          <Fragment key={i}>
+            {summary?.count === i && (
+              <details className="history-summary">
+                <summary>Earlier conversation summarized</summary>
+                <p>{summary.content}</p>
+              </details>
+            )}
+            <div className={`message ${m.role}`}>{m.content || '…'}</div>
+          </Fragment>
         ))}
         <div ref={endRef} />
       </div>

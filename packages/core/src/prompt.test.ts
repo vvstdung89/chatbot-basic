@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildSystemPrompt, SYSTEM_PROMPT, withSystemPrompt } from './prompt';
+import { buildSystemPrompt, SYSTEM_PROMPT, withSummary, withSystemPrompt } from './prompt';
 import type { ChatMessage } from './types';
 
 const messages: ChatMessage[] = [
@@ -51,5 +51,18 @@ describe('buildSystemPrompt', () => {
 
   it('uses SYSTEM_PROMPT by default', () => {
     expect(buildSystemPrompt({})).toBe(SYSTEM_PROMPT);
+  });
+});
+
+describe('withSummary', () => {
+  it('appends the conversation summary under its own heading', () => {
+    const prompt = withSummary('Be brief.', '  - An asked about order #1 ');
+    expect(prompt).toMatch(/^Be brief\.\n\n## Conversation Summary ##\n/);
+    expect(prompt).toMatch(/\n\n- An asked about order #1$/);
+  });
+
+  it('returns the prompt unchanged without a summary', () => {
+    expect(withSummary('Be brief.', undefined)).toBe('Be brief.');
+    expect(withSummary('Be brief.', ' \n ')).toBe('Be brief.');
   });
 });

@@ -169,3 +169,23 @@ body {
   opacity: 0.5;
   cursor: default;
 }
+
+.history-summary {
+  align-self: stretch;
+  color: var(--muted);
+  font-size: 0.875rem;
+  text-align: center;
+}
+
+.history-summary summary {
+  cursor: pointer;
+}
+
+.history-summary p {
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  text-align: left;
+  white-space: pre-wrap;
+}

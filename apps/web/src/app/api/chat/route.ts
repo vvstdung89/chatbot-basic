@@ -1,13 +1,17 @@
 import {
   buildSystemPrompt,
   ChatRequestError,
+  createSummarizer,
+  fitHistory,
   getProvider,
   parseMessages,
   parseUserInfo,
   searchDocumentsTool,
   type ChatMessage,
   type ChatProvider,
+  type HistorySummary,
   type UserInfo,
+  withSummary,
   withSystemPrompt,
 } from '@chatbot/core';
 import { knowledge } from '@/lib/knowledge';
@@ -16,7 +20,8 @@ import { knowledge } from '@/lib/knowledge';
  * POST /api/chat
  * Body: { messages: ChatMessage[], userInfo?: UserInfo }
  * Response: the assistant reply, streamed as plain UTF-8 text. The model may search the
- * knowledge documents (via tool calls) before replying.
+ * knowledge documents (via tool calls) before replying. When older messages were summarized,
+ * the X-Chat-Summary header holds encodeURIComponent(JSON.stringify({ count, content })).
  * Errors: { error: string } with 400 (bad request), 500 (misconfigured), 502 (provider failed).
  */
 export async function POST(request: Request): Promise<Response> {
@@ -30,7 +35,6 @@ export async function POST(request: Request): Promise<Response> {
     const error = err instanceof ChatRequestError ? err.message : 'Body must be valid JSON';
     return Response.json({ error }, { status: 400 });
   }
-  messages = withSystemPrompt(messages, buildSystemPrompt(userInfo));
 
   let provider: ChatProvider;
   try {
@@ -39,6 +43,19 @@ export async function POST(request: Request): Promise<Response> {
     console.error('[chat] provider config error:', err);
     return Response.json({ error: errorMessage(err) }, { status: 500 });
   }
+
+  // Over the history budget, older messages are replaced by a summary (an extra LLM call).
+  let summary: HistorySummary | undefined;
+  try {
+    const history = messages.filter((m) => m.role !== 'system');
+    ({ messages, summary } = await fitHistory(history, {
+      summarize: createSummarizer(provider, request.signal),
+    }));
+  } catch (err) {
+    console.error(`[chat] ${provider.name} summary failed:`, err);
+    return Response.json({ error: `${provider.name}: ${errorMessage(err)}` }, { status: 502 });
+  }
+  messages = withSystemPrompt(messages, withSummary(buildSystemPrompt(userInfo), summary?.content));
 
   // Wait for the first chunk so upstream failures (bad key, unknown model, rate limit)
   // become an HTTP error rather than a 200 response whose stream breaks.
@@ -58,6 +75,7 @@ export async function POST(request: Request): Promise<Response> {
     headers: {
       'Content-Type': 'text/plain; charset=utf-8',
       'Cache-Control': 'no-store',
+      ...(summary && { 'X-Chat-Summary': encodeURIComponent(JSON.stringify(summary)) }),
     },
   });
 }

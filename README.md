@@ -24,7 +24,8 @@ A streaming chatbot in TypeScript. By default it talks to
 │       └── src/
 │           ├── types.ts                ChatMessage, ChatProvider, ChatTool, Embedder
 │           ├── validate.ts             Request body validation
-│           ├── prompt.ts               System prompt (edit it here) + User Info
+│           ├── prompt.ts               System prompt (edit it here) + User Info, summary prompt
+│           ├── context.ts              History budget and summarizing older messages
 │           ├── user-info.ts            User Info parts (browser-safe)
 │           ├── knowledge.ts            Document search (chunking, embeddings, tool)
 │           └── providers/
@@ -97,7 +98,17 @@ browser. Errors are `{ "error": "..." }` with:
 
 - `400`: malformed request body
 - `500`: provider misconfigured (e.g. `OPENROUTER_API_KEY` not set)
-- `502`: the provider failed before replying (invalid key, unknown model, rate limit, ...)
+- `502`: the provider failed before replying (invalid key, unknown model, rate limit, ...), or
+  summarizing older messages failed
+
+History is kept within 4,000 estimated tokens (`HISTORY_TOKEN_BUDGET` in
+`packages/core/src/context.ts`). Over that, the server keeps the newest messages (about half the
+budget), summarizes the older ones with the chat model (`SUMMARY_PROMPT`) and puts the summary in
+the system prompt under `## Conversation Summary ##`. This happens on every request over budget,
+so those replies take one extra LLM call. The response header `X-Chat-Summary` is
+`encodeURIComponent(JSON.stringify({ count, content }))`: the first `count` sent messages were
+replaced by `content`. The UI keeps showing all messages and adds a collapsible "Earlier
+conversation summarized" divider.
 
 A failure after the reply has started aborts the stream; the UI keeps the partial reply.
 

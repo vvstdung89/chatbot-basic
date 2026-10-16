@@ -6,7 +6,21 @@ export {
   type UserInfo,
   type UserInfoKey,
 } from './user-info';
-export { buildSystemPrompt, SYSTEM_PROMPT, withSystemPrompt } from './prompt';
+export {
+  buildSystemPrompt,
+  SUMMARY_PROMPT,
+  SYSTEM_PROMPT,
+  withSummary,
+  withSystemPrompt,
+} from './prompt';
+export {
+  createSummarizer,
+  estimateTokens,
+  fitHistory,
+  HISTORY_TOKEN_BUDGET,
+  type FitHistoryOptions,
+  type HistorySummary,
+} from './context';
 export {
   chunkDocument,
   KnowledgeBase,
