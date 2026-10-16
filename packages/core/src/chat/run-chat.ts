@@ -3,8 +3,18 @@ import { searchDocumentsTool, type KnowledgeBase } from '../rag/knowledge';
 import type { ChatEvent, ChatProvider, ChatTool } from '../types';
 import { createSummarizer, fitHistory } from './context';
 import { buildSystemPrompt, withSystemPrompt } from './prompt';
-import type { ChatRequest } from './validate';
 import { emitTrace, type TraceCallback } from './trace';
+import type { UserInfo } from './user-info';
+import type { PaymentQrInfo } from '../payment/vietqr';
+import type { ChatMessage } from '../types';
+
+/** What one reply is based on: the conversation so far and the user's stored data. */
+export interface ChatRequest {
+  messages: ChatMessage[];
+  userInfo: UserInfo;
+  /** Bank details waiting for the user's confirmation. */
+  pendingPayment?: PaymentQrInfo;
+}
 
 export interface RunChatOptions {
   onTrace?: TraceCallback;
@@ -45,7 +55,9 @@ export async function* runChat(
     ...(knowledge && knowledge.files().length > 0 ? [searchDocumentsTool(knowledge, onTrace)] : []),
     updateBankInfoTool({
       pending: pendingPayment,
-      onUpdate: (payment) => events.push({ type: 'payment', payment }),
+      onPropose: (pending) => events.push({ type: 'pending_payment', pending }),
+      onConfirm: (payment) => events.push({ type: 'payment', payment }),
+      onCancel: () => events.push({ type: 'pending_payment', pending: null }),
     }),
   ];
 

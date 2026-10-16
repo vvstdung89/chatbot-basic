@@ -7,6 +7,12 @@ export type Env = Readonly<Record<string, string | undefined>>;
 export const DEFAULT_PROVIDER = 'openrouter';
 
 /**
+ * Upstream providers OpenRouter skips unless OPENROUTER_IGNORE_PROVIDERS says otherwise ("" = none).
+ * sail-research drops optional tool arguments (docs/bug_report/openrouter-provider-drops-tool-arguments.md).
+ */
+export const DEFAULT_IGNORED_PROVIDERS = 'sail-research';
+
+/**
  * Registered providers, keyed by the name used in CHAT_PROVIDER.
  * To add one: implement ChatProvider in this folder and register it here.
  */
@@ -17,6 +23,10 @@ const providers = new Map<string, (env: Env) => ChatProvider>([
       new OpenRouterProvider({
         apiKey: requireEnv(env, 'OPENROUTER_API_KEY'),
         model: env.OPENROUTER_MODEL,
+        ignoreProviders: (env.OPENROUTER_IGNORE_PROVIDERS ?? DEFAULT_IGNORED_PROVIDERS)
+          .split(',')
+          .map((slug) => slug.trim())
+          .filter(Boolean),
       }),
   ],
   ['echo', () => new EchoProvider()],

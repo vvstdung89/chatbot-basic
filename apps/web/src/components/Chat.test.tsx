@@ -2,7 +2,40 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Chat } from './Chat';
 
-const STORAGE_KEY = 'chatbot.userInfo';
+const SESSION_KEY = 'chatbot.sessionId';
+const OLD_USER_INFO_KEY = 'chatbot.userInfo';
+
+type Handler = (url: string, init?: RequestInit) => Response | Promise<Response>;
+
+/** fetch stub routing "METHOD /path" to handlers; records every call. */
+function stubApi(routes: Record<string, Handler>) {
+  const calls: { method: string; url: string; body: unknown }[] = [];
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      const body =
+        typeof init?.body === 'string'
+          ? JSON.parse(init.body)
+          : init?.body instanceof FormData
+            ? Object.fromEntries(init.body)
+            : undefined;
+      calls.push({ method, url, body });
+      const handler = routes[`${method} ${url.split('?')[0]}`];
+      if (!handler) throw new Error(`unexpected ${method} ${url}`);
+      return handler(url, init);
+    }),
+  );
+  return calls;
+}
+
+const newSession = () =>
+  Response.json({ sessionId: 's1', messages: [], userInfo: {} }, { status: 201 });
+
+const ndjson = (events: object[]) =>
+  new Response(events.map((event) => `${JSON.stringify(event)}\n`).join(''), {
+    headers: { 'Content-Type': 'application/x-ndjson' },
+  });
 
 /** A /api/chat NDJSON body the test writes events into. */
 function eventStream() {
@@ -31,146 +64,133 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** fetch stub: /api/chat answers with the next list of events, /api/payment-qr with `qr`. */
-function stubApi(replies: object[][], qr?: object) {
-  const bodies: Record<string, unknown>[] = [];
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (url: string, init?: RequestInit) => {
-      if (url === '/api/payment-qr') return Response.json(qr);
-      bodies.push(JSON.parse(String(init?.body)));
-      const stream = eventStream();
-      for (const event of replies.shift() ?? []) stream.push(event);
-      stream.close();
-      return stream.response;
-    }),
-  );
-  return bodies;
-}
-
-const vietcombank = {
-  bin: '970436',
-  bankCode: 'VCB',
-  bankShortName: 'Vietcombank',
-  bankName: 'Ngân hàng TMCP Ngoại Thương Việt Nam',
-  accountNumber: '0123456789',
-  type: 'account',
-};
-
 describe('Chat', () => {
-  it('sends the history and User Info, and streams the reply', async () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ profile: 'Name: An' }));
-    const bodies = stubApi([
-      [
-        { type: 'text', text: 'Xin ' },
-        { type: 'text', text: 'chào' },
-      ],
-    ]);
+  it('starts a session, then sends only the session id and the message', async () => {
+    const calls = stubApi({
+      'POST /api/session': newSession,
+      'POST /api/chat': () =>
+        ndjson([
+          { type: 'session', sessionId: 's1' },
+          { type: 'text', text: 'Xin ' },
+          { type: 'text', text: 'chào' },
+        ]),
+    });
     render(<Chat />);
+    await waitFor(() => expect(localStorage.getItem(SESSION_KEY)).toBe('s1'));
 
     sendMessage('hi');
 
     await screen.findByText('Xin chào');
-    expect(bodies).toEqual([
-      { messages: [{ role: 'user', content: 'hi' }], userInfo: { profile: 'Name: An' } },
-    ]);
+    expect(calls.find((c) => c.url === '/api/chat')?.body).toEqual({
+      sessionId: 's1',
+      message: 'hi',
+    });
   });
 
-  it('sends only the newest messages within the limits; the summary divider counts the rest', async () => {
-    const long = (n: number) => `${n}`.padEnd(50_000, '.');
-    const bodies = stubApi([
-      [{ type: 'text', text: 'r1' }],
-      [{ type: 'text', text: 'r2' }],
-      [{ type: 'text', text: 'r3' }],
-      [
-        { type: 'summary', count: 2, content: 'Earlier: four long messages' },
-        { type: 'text', text: 'r4' },
-      ],
-    ]);
+  it('restores a saved session: messages, User Info and the summary divider', async () => {
+    localStorage.setItem(SESSION_KEY, 's1');
+    stubApi({
+      'GET /api/session': () =>
+        Response.json({
+          sessionId: 's1',
+          messages: [
+            { role: 'user', content: 'q1' },
+            { role: 'assistant', content: 'a1' },
+            { role: 'user', content: 'q2' },
+            { role: 'assistant', content: 'a2' },
+          ],
+          userInfo: { profile: 'Name: An' },
+          summary: { count: 2, content: 'Earlier: q1' },
+        }),
+    });
     render(<Chat />);
 
-    for (const [n, reply] of [
-      [1, 'r1'],
-      [2, 'r2'],
-      [3, 'r3'],
-      [4, 'r4'],
-    ] as const) {
-      sendMessage(long(n));
-      await screen.findByText(reply);
-    }
-
-    // 4 × 50,000 characters is over the 150,000 limit: the oldest 3 messages are not sent.
-    expect(bodies[3]?.messages).toEqual([
-      { role: 'assistant', content: 'r2' },
-      { role: 'user', content: long(3) },
-      { role: 'assistant', content: 'r3' },
-      { role: 'user', content: long(4) },
-    ]);
-    // The summary replaces 2 sent messages, i.e. the first 3 + 2 of the whole chat.
+    await screen.findByText('a2');
+    expect(screen.getByLabelText('User Profile')).toHaveProperty('value', 'Name: An');
     const divider = screen.getByText('Earlier conversation summarized').closest('details');
-    expect(divider?.nextElementSibling?.textContent).toBe('r3');
+    expect(divider?.nextElementSibling?.textContent).toBe('q2');
   });
 
-  it('reads a bank QR back, sends it as pending until a payment event saves it', async () => {
-    const bodies = stubApi(
-      [
-        [
-          { type: 'payment', payment: 'Ngân hàng: Vietcombank\nSố tài khoản: 0123456789' },
-          { type: 'text', text: 'Dạ em đã lưu ạ.' },
-        ],
-        [{ type: 'text', text: 'Không có gì ạ.' }],
-      ],
-      vietcombank,
-    );
-    const { container } = render(<Chat />);
+  it('starts a new session when the saved one is gone', async () => {
+    localStorage.setItem(SESSION_KEY, 'expired');
+    stubApi({
+      'GET /api/session': () =>
+        Response.json({ error: 'Unknown or expired session' }, { status: 404 }),
+      'POST /api/session': newSession,
+    });
+    render(<Chat />);
+    await waitFor(() => expect(localStorage.getItem(SESSION_KEY)).toBe('s1'));
+  });
 
-    const fileInput = container.querySelector('input[type="file"]')!;
-    fireEvent.change(fileInput, { target: { files: [new File(['png'], 'qr.png')] } });
-    await screen.findByText(/Dạ em đọc được từ mã QR/);
-    expect(screen.getByText('[Ảnh mã QR ngân hàng]')).toBeTruthy();
+  it('saves only the edited User Info part, and a bank save from the bot keeps the edit', async () => {
+    const stream = eventStream();
+    const calls = stubApi({
+      'POST /api/session': newSession,
+      'PUT /api/session/user-info': () => new Response(null, { status: 204 }),
+      'POST /api/chat': () => stream.response,
+    });
+    render(<Chat />);
+    await waitFor(() => expect(localStorage.getItem(SESSION_KEY)).toBe('s1'));
 
     sendMessage('đúng rồi');
-    await screen.findByText('Dạ em đã lưu ạ.');
-    sendMessage('cảm ơn');
-    await screen.findByText('Không có gì ạ.');
-
-    expect(bodies[0]?.pendingPayment).toEqual(vietcombank);
-    expect(bodies[1]).not.toHaveProperty('pendingPayment');
-    expect(screen.getByLabelText('User Payment')).toHaveProperty(
-      'value',
-      'Ngân hàng: Vietcombank\nSố tài khoản: 0123456789',
-    );
-  });
-
-  it('keeps User Info edits made while a reply streams when a payment event arrives', async () => {
-    const stream = eventStream();
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => stream.response),
-    );
-    render(<Chat />);
-
-    sendMessage('đổi STK sang Techcombank 19031234567');
-    await act(async () => stream.push({ type: 'text', text: 'Dạ em ' }));
-    await screen.findByText('Dạ em');
-
-    // The user edits Settings while the reply is still streaming.
-    fireEvent.change(screen.getByLabelText('User Profile'), { target: { value: 'Name: An' } });
-
     await act(async () => {
-      stream.push({
-        type: 'payment',
-        payment: 'Ngân hàng: Techcombank\nSố tài khoản: 19031234567',
-      });
+      stream.push({ type: 'session', sessionId: 's1' });
+      stream.push({ type: 'text', text: 'Dạ em ' });
+    });
+    await screen.findByText('Dạ em');
+    // The user edits Settings while the reply streams.
+    fireEvent.change(screen.getByLabelText('User Profile'), { target: { value: 'Name: An' } });
+    await act(async () => {
+      stream.push({ type: 'payment', payment: 'Ngân hàng: Vietcombank' });
       stream.push({ type: 'text', text: 'đã lưu ạ.' });
       stream.close();
     });
     await screen.findByText('Dạ em đã lưu ạ.');
 
     expect(screen.getByLabelText('User Profile')).toHaveProperty('value', 'Name: An');
-    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}')).toEqual({
-      profile: 'Name: An',
-      payment: 'Ngân hàng: Techcombank\nSố tài khoản: 19031234567',
+    expect(screen.getByLabelText('User Payment')).toHaveProperty('value', 'Ngân hàng: Vietcombank');
+    await waitFor(() =>
+      expect(calls.filter((c) => c.method === 'PUT').map((c) => c.body)).toEqual([
+        { sessionId: 's1', userInfo: { profile: 'Name: An' } },
+      ]),
+    );
+  });
+
+  it('uploads a QR image with the session id and shows the messages the server stored', async () => {
+    const calls = stubApi({
+      'POST /api/session': newSession,
+      'POST /api/payment-qr': () =>
+        Response.json({
+          messages: [
+            { role: 'user', content: '[Ảnh mã QR ngân hàng]' },
+            { role: 'assistant', content: 'Dạ em đọc được từ mã QR: Vietcombank' },
+          ],
+        }),
     });
+    const { container } = render(<Chat />);
+    await waitFor(() => expect(localStorage.getItem(SESSION_KEY)).toBe('s1'));
+
+    const file = new File(['png'], 'qr.png', { type: 'image/png' });
+    fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [file] } });
+
+    await screen.findByText('Dạ em đọc được từ mã QR: Vietcombank');
+    expect(screen.getByText('[Ảnh mã QR ngân hàng]')).toBeTruthy();
+    expect(calls.find((c) => c.url === '/api/payment-qr')?.body).toMatchObject({ sessionId: 's1' });
+  });
+
+  it('moves User Info saved by the old version into the new session once', async () => {
+    localStorage.setItem(OLD_USER_INFO_KEY, JSON.stringify({ profile: 'Name: An' }));
+    const calls = stubApi({
+      'POST /api/session': newSession,
+      'PUT /api/session/user-info': () => new Response(null, { status: 204 }),
+    });
+    render(<Chat />);
+
+    await waitFor(() => expect(localStorage.getItem(OLD_USER_INFO_KEY)).toBeNull());
+    expect(calls.find((c) => c.method === 'PUT')?.body).toEqual({
+      sessionId: 's1',
+      userInfo: { profile: 'Name: An' },
+    });
+    expect(screen.getByLabelText('User Profile')).toHaveProperty('value', 'Name: An');
   });
 });

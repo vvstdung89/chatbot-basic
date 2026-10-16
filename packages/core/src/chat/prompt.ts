@@ -74,15 +74,15 @@ Summary of the earlier part of this conversation; those messages are not shown. 
 ${content}`;
 }
 
-/** QR bank details waiting for the user's confirmation, and how to save them. */
+/** Bank details waiting for the user's confirmation (QR or typed), and how to save them. */
 function pendingPaymentSection(pending: PaymentQrInfo | undefined): string {
   if (!pending) return '';
   return `## Pending Bank Details ##
-The user uploaded a bank QR code. These details were read from it and are waiting for the user's confirmation:
+These bank details are waiting for the user's confirmation (read from their QR code or typed by them); they are not saved yet:
 
 ${formatPaymentInfo(pending)}
 
-If the user confirms, call update_bank_info with source "qr" (add accountName if the user gives one). If the user declines, do not save them and do not ask again.`;
+If the user confirms, call update_bank_info with step "confirm" (add accountName if they give one). If they decline, call it with step "cancel". Otherwise answer their message, then ask again whether to save these details.`;
 }
 
 /**

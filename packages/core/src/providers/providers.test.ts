@@ -56,6 +56,17 @@ describe('getProvider', () => {
     expect((empty as OpenRouterProvider).model).toBe(DEFAULT_OPENROUTER_MODEL);
   });
 
+  it('reads upstream providers to skip from OPENROUTER_IGNORE_PROVIDERS (default: sail-research)', () => {
+    const ignored = (env: Record<string, string>) =>
+      (getProvider({ OPENROUTER_API_KEY: 'k', ...env }) as OpenRouterProvider).ignoreProviders;
+    expect(ignored({})).toEqual(['sail-research']);
+    expect(ignored({ OPENROUTER_IGNORE_PROVIDERS: ' novita, together ,' })).toEqual([
+      'novita',
+      'together',
+    ]);
+    expect(ignored({ OPENROUTER_IGNORE_PROVIDERS: '' })).toEqual([]);
+  });
+
   it('requires OPENROUTER_API_KEY', () => {
     expect(() => getProvider({ CHAT_PROVIDER: 'openrouter' })).toThrow(
       'OPENROUTER_API_KEY is not set',

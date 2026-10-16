@@ -7,7 +7,7 @@ export type {
   ChatTool,
   Embedder,
 } from './types';
-export { runChat, type RunChatOptions } from './chat/run-chat';
+export { runChat, type ChatRequest, type RunChatOptions } from './chat/run-chat';
 export { createTrace, emitTrace, type TraceEvent, type TraceCallback } from './chat/trace';
 export { encodeChatEvent, readChatEvents } from './chat/events';
 export {
@@ -15,13 +15,19 @@ export {
   MAX_HISTORY_LENGTH,
   MAX_MESSAGE_LENGTH,
   MAX_MESSAGES,
-  parseChatRequest,
-  parseMessages,
-  parsePendingPayment,
+  parseChatTurn,
+  parseSessionId,
   parseUserInfo,
   trimHistory,
-  type ChatRequest,
+  type ChatTurnRequest,
 } from './chat/validate';
+export {
+  MemorySessionStore,
+  type MemorySessionStoreOptions,
+  type Session,
+  type SessionStore,
+} from './session/store';
+export { chatTurn, SessionBusyError, type ChatTurnOptions } from './session/chat-turn';
 export {
   MAX_USER_INFO_LENGTH,
   USER_INFO_SECTIONS,
@@ -41,7 +47,9 @@ export {
   normalizeAccountName,
   parseVietQR,
   paymentReadBack,
+  paymentReadFailed,
   PaymentQrError,
+  QR_UPLOAD_MESSAGE,
   type Bank,
   type PaymentQrInfo,
 } from './payment/vietqr';

@@ -72,6 +72,26 @@ describe('OpenRouterProvider', () => {
     expect(seen.body).toMatchObject({ model: DEFAULT_OPENROUTER_MODEL, messages, stream: true });
   });
 
+  it('asks OpenRouter to skip the given upstream providers, and sends no routing otherwise', async () => {
+    const bodies: unknown[] = [];
+    handler = (_req, body, res) => {
+      bodies.push(JSON.parse(body));
+      sendEvents(res, [delta({ content: 'ok' }), 'data: [DONE]\n\n']);
+    };
+
+    await collect(
+      new OpenRouterProvider({
+        apiKey: 'sk-test',
+        baseURL,
+        ignoreProviders: ['sail-research'],
+      }).streamChat(messages),
+    );
+    await collect(provider().streamChat(messages));
+
+    expect(bodies[0]).toMatchObject({ provider: { ignore: ['sail-research'] } });
+    expect(bodies[1]).not.toHaveProperty('provider');
+  });
+
   it('streams only answer text, skipping comments, reasoning and usage chunks', async () => {
     handler = (_req, _body, res) =>
       sendEvents(res, [

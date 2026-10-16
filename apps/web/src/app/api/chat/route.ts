@@ -1,24 +1,27 @@
 import {
   ChatRequestError,
+  chatTurn,
   createTrace,
   emitTrace,
   encodeChatEvent,
   getProvider,
-  parseChatRequest,
-  runChat,
+  parseChatTurn,
+  SessionBusyError,
   type ChatEvent,
   type ChatProvider,
-  type ChatRequest,
+  type ChatTurnRequest,
 } from '@chatbot/core';
 import { knowledge } from '@/lib/knowledge';
+import { sessions } from '@/lib/sessions';
 
 /**
  * POST /api/chat
- * Body: { messages: ChatMessage[], userInfo?: UserInfo, pendingPayment?: PaymentQrInfo }
- * Response: NDJSON, one ChatEvent per line: "summary" (older messages were summarized), "text"
- * (reply chunks) and "payment" (update_bank_info saved new User Payment text). The pipeline is
- * runChat in @chatbot/core; this route only does HTTP.
- * Errors: { error: string } with 400 (bad request), 500 (misconfigured), 502 (provider failed).
+ * Body: { sessionId?, message } — the conversation itself is kept on the server.
+ * Response: NDJSON, one ChatEvent per line: "session" (always first), "summary" (older messages
+ * were summarized), "text" (reply chunks) and "payment" (update_bank_info saved new User Payment
+ * text). The pipeline is chatTurn / runChat in @chatbot/core; this route only does HTTP.
+ * Errors: { error: string } with 400 (bad request), 409 (a reply for this session is already in
+ * progress), 500 (misconfigured), 502 (provider failed).
  */
 export async function POST(request: Request): Promise<Response> {
   const requestId = process.env.CHAT_DEBUG === '1' ? crypto.randomUUID() : undefined;
@@ -47,9 +50,9 @@ export async function POST(request: Request): Promise<Response> {
   request.signal.addEventListener('abort', aborted, { once: true });
   if (request.signal.aborted) aborted();
 
-  let chat: ChatRequest;
+  let turn: ChatTurnRequest;
   try {
-    chat = parseChatRequest(await request.json());
+    turn = parseChatTurn(await request.json());
   } catch (err) {
     const error = err instanceof ChatRequestError ? err.message : 'Body must be valid JSON';
     finish('request.error', 400, error);
@@ -65,13 +68,23 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ error: errorMessage(err) }, { status: 500, headers });
   }
 
-  // runChat yields nothing until the provider replied, so upstream failures (bad key, unknown
+  // chatTurn yields nothing until the provider replied, so upstream failures (bad key, unknown
   // model, rate limit, summary failure) become an HTTP error rather than a broken 200 stream.
-  const events = runChat(chat, { provider, knowledge, signal: request.signal, onTrace });
+  const events = chatTurn(turn, {
+    store: sessions,
+    provider,
+    knowledge,
+    signal: request.signal,
+    onTrace,
+  });
   let first: IteratorResult<ChatEvent>;
   try {
     first = await events.next();
   } catch (err) {
+    if (err instanceof SessionBusyError) {
+      finish('request.error', 409, err);
+      return Response.json({ error: err.message }, { status: 409, headers });
+    }
     console.error(`[chat] ${provider.name} failed:`, err);
     finish('request.error', 502, err);
     return Response.json(

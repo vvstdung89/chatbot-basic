@@ -1,10 +1,7 @@
-import type { ChatMessage, ChatRole } from '../types';
+import type { ChatMessage } from '../types';
 import { MAX_USER_INFO_LENGTH, USER_INFO_SECTIONS, type UserInfo } from './user-info';
-import type { PaymentQrInfo } from '../payment/vietqr';
 
-const ROLES: ReadonlySet<string> = new Set<ChatRole>(['system', 'user', 'assistant']);
-
-/** Thrown when a chat request body is malformed; safe to show to the client. */
+/** Thrown when a request body is malformed; safe to show to the client. */
 export class ChatRequestError extends Error {
   override name = 'ChatRequestError';
 }
@@ -12,50 +9,47 @@ export class ChatRequestError extends Error {
 /** Longest message accepted, in characters. */
 export const MAX_MESSAGE_LENGTH = 50_000;
 /**
- * Most history accepted per request. The server reads at most ~26k tokens (~80k characters) of
- * history anyway (kept messages + summarizer input), so trimHistory changes nothing the model sees.
+ * Most history kept per session. The server reads at most ~26k tokens (~80k characters) of history
+ * anyway (kept messages + summarizer input), so trimming to this changes nothing the model sees.
  */
 export const MAX_MESSAGES = 1_000;
 export const MAX_HISTORY_LENGTH = 150_000;
 
-/** Validates an untrusted `{ messages: [...] }` body and returns its messages. */
-export function parseMessages(body: unknown): ChatMessage[] {
-  const messages = isRecord(body) ? body.messages : undefined;
-  if (!Array.isArray(messages) || messages.length === 0) {
-    throw new ChatRequestError('Body must be an object with a non-empty "messages" array');
-  }
-  if (messages.length > MAX_MESSAGES) {
-    throw new ChatRequestError(`messages must have at most ${MAX_MESSAGES} items`);
-  }
+const SESSION_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
-  let length = 0;
-  return messages.map((message: unknown, i): ChatMessage => {
-    if (!isRecord(message)) {
-      throw new ChatRequestError(`messages[${i}] must be an object`);
-    }
-    const { role, content } = message;
-    if (typeof role !== 'string' || !ROLES.has(role)) {
-      throw new ChatRequestError(`messages[${i}].role must be one of: ${[...ROLES].join(', ')}`);
-    }
-    if (typeof content !== 'string') {
-      throw new ChatRequestError(`messages[${i}].content must be a string`);
-    }
-    if (content.length > MAX_MESSAGE_LENGTH) {
-      throw new ChatRequestError(
-        `messages[${i}].content must be at most ${MAX_MESSAGE_LENGTH} characters`,
-      );
-    }
-    length += content.length;
-    if (length > MAX_HISTORY_LENGTH) {
-      throw new ChatRequestError(`messages must total at most ${MAX_HISTORY_LENGTH} characters`);
-    }
-    return { role: role as ChatRole, content };
-  });
+/** A validated POST /api/chat body: the new message, for an existing or a new session. */
+export interface ChatTurnRequest {
+  sessionId?: string;
+  message: string;
+}
+
+/** Validates an untrusted `{ sessionId?, message }` body. */
+export function parseChatTurn(body: unknown): ChatTurnRequest {
+  if (!isRecord(body)) throw new ChatRequestError('Body must be an object');
+  const { message, sessionId } = body;
+  if (typeof message !== 'string' || !message.trim()) {
+    throw new ChatRequestError('"message" must be a non-empty string');
+  }
+  if (message.length > MAX_MESSAGE_LENGTH) {
+    throw new ChatRequestError(`"message" must be at most ${MAX_MESSAGE_LENGTH} characters`);
+  }
+  return {
+    ...(sessionId !== undefined && { sessionId: parseSessionId(sessionId) }),
+    message: message.trim(),
+  };
+}
+
+/** Validates an untrusted session id (letters, digits, "-" and "_", at most 64). */
+export function parseSessionId(value: unknown): string {
+  if (typeof value !== 'string' || !SESSION_ID.test(value)) {
+    throw new ChatRequestError('"sessionId" is not a valid session id');
+  }
+  return value;
 }
 
 /**
- * The newest messages that fit the request limits, for the browser to send; `dropped` is how many
- * older messages were left out. Stops before a message that is too long to send.
+ * The newest messages within the history limits; `dropped` is how many older messages were left
+ * out. Stops before a message that is too long to keep.
  */
 export function trimHistory(messages: ChatMessage[]): {
   messages: ChatMessage[];
@@ -95,58 +89,6 @@ export function parseUserInfo(body: unknown): UserInfo {
     result[key] = text;
   }
   return result;
-}
-
-/** A validated POST /api/chat body. */
-export interface ChatRequest {
-  messages: ChatMessage[];
-  userInfo: UserInfo;
-  /** QR bank details waiting for the user's confirmation. */
-  pendingPayment?: PaymentQrInfo;
-}
-
-/** Validates an untrusted POST /api/chat body; throws ChatRequestError when it is malformed. */
-export function parseChatRequest(body: unknown): ChatRequest {
-  const pendingPayment = parsePendingPayment(body);
-  return {
-    messages: parseMessages(body),
-    userInfo: parseUserInfo(body),
-    ...(pendingPayment && { pendingPayment }),
-  };
-}
-
-const PAYMENT_TEXT_FIELDS = ['bankCode', 'bankShortName', 'bankName', 'accountName'] as const;
-
-/** Returns the optional `pendingPayment` (QR details awaiting confirmation) from a body. */
-export function parsePendingPayment(body: unknown): PaymentQrInfo | undefined {
-  const value = isRecord(body) ? body.pendingPayment : undefined;
-  if (value === undefined) return undefined;
-  if (!isRecord(value)) {
-    throw new ChatRequestError('pendingPayment must be an object');
-  }
-  const { bin, accountNumber, type } = value;
-  if (typeof bin !== 'string' || !/^\d{6}$/.test(bin)) {
-    throw new ChatRequestError('pendingPayment.bin must be 6 digits');
-  }
-  if (typeof accountNumber !== 'string' || !/^[0-9A-Za-z]{1,32}$/.test(accountNumber)) {
-    throw new ChatRequestError('pendingPayment.accountNumber must be 1-32 letters or digits');
-  }
-  if (type !== 'account' && type !== 'card') {
-    throw new ChatRequestError('pendingPayment.type must be "account" or "card"');
-  }
-
-  const info: PaymentQrInfo = { bin, accountNumber, type };
-  for (const key of PAYMENT_TEXT_FIELDS) {
-    const text = value[key];
-    if (text === undefined) continue;
-    if (typeof text !== 'string' || text.length > 200) {
-      throw new ChatRequestError(
-        `pendingPayment.${key} must be a string of at most 200 characters`,
-      );
-    }
-    info[key] = text;
-  }
-  return info;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

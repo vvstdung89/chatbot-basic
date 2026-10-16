@@ -59,12 +59,13 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toMatch(/\n\n- An asked about order #1$/);
   });
 
-  it('describes pending QR details and how to save them', () => {
+  it('describes pending bank details and how to confirm or cancel them', () => {
     const prompt = buildSystemPrompt({ pendingPayment }, 'Be brief.');
     expect(prompt).toMatch(/^Be brief\.\n\n## Pending Bank Details ##\n/);
     expect(prompt).toContain('Số tài khoản: 0123456789');
     expect(prompt).toContain('update_bank_info');
-    expect(prompt).toContain('"qr"');
+    expect(prompt).toContain('step "confirm"');
+    expect(prompt).toContain('step "cancel"');
   });
 
   it('orders sections: User Info, Conversation Summary, Pending Bank Details', () => {

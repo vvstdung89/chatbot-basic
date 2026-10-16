@@ -15,12 +15,13 @@ A streaming chatbot in TypeScript. By default it talks to
 │       └── src/
 │           ├── app/
 │           ├── app/
-│           │   ├── api/chat/route.ts        POST /api/chat (HTTP around runChat), NDJSON events
+│           │   ├── api/chat/route.ts        POST /api/chat (HTTP around chatTurn), NDJSON events
+│           │   ├── api/session/             POST/GET a session, PUT User Info
 │           │   ├── api/payment-qr/route.ts  POST /api/payment-qr, reads a bank QR image
 │           │   ├── layout.tsx
 │           │   ├── page.tsx
 │           │   └── globals.css
-│           ├── components/             Chat UI: Chat, Composer, UserInfoSettings, useChat, useUserInfo
+│           ├── components/             Chat UI: Chat, Composer, UserInfoSettings, useChat (session)
 │           ├── lib/knowledge.ts        Shared document index
 │           └── instrumentation.ts      Indexes documents at server startup
 ├── packages/
@@ -31,6 +32,7 @@ A streaming chatbot in TypeScript. By default it talks to
 │           ├── types.ts                ChatMessage, ChatProvider, ChatTool, ChatEvent, Embedder
 │           ├── chat/                   run-chat.ts (the pipeline), validate.ts, prompt.ts (system
 │           │                           prompt: edit it here), context.ts, events.ts, user-info.ts
+│           ├── session/                store.ts (SessionStore, in memory), chat-turn.ts
 │           ├── rag/                    knowledge.ts: document search (chunking, embeddings, tool)
 │           ├── payment/                vietqr.ts, banks.json, bank-tool.ts, qr-image.ts
 │           └── providers/
@@ -62,12 +64,13 @@ pnpm dev                              # http://localhost:3000
 
 Set these in `apps/web/.env.local`:
 
-| Variable                     | Default                        | Purpose                                        |
-| ---------------------------- | ------------------------------ | ---------------------------------------------- |
-| `CHAT_PROVIDER`              | `openrouter`                   | `openrouter`, or `echo` to run without a key   |
-| `OPENROUTER_API_KEY`         | (required for `openrouter`)    | Key from https://openrouter.ai/keys            |
-| `OPENROUTER_MODEL`           | `deepseek/deepseek-v4.1-flash` | Any model id from https://openrouter.ai/models |
-| `OPENROUTER_EMBEDDING_MODEL` | `baai/bge-m3`                  | Embedding model for document search            |
+| Variable                      | Default                        | Purpose                                                             |
+| ----------------------------- | ------------------------------ | ------------------------------------------------------------------- |
+| `CHAT_PROVIDER`               | `openrouter`                   | `openrouter`, or `echo` to run without a key                        |
+| `OPENROUTER_API_KEY`          | (required for `openrouter`)    | Key from https://openrouter.ai/keys                                 |
+| `OPENROUTER_MODEL`            | `deepseek/deepseek-v4.1-flash` | Any model id from https://openrouter.ai/models                      |
+| `OPENROUTER_EMBEDDING_MODEL`  | `baai/bge-m3`                  | Embedding model for document search                                 |
+| `OPENROUTER_IGNORE_PROVIDERS` | `sail-research`                | Upstream providers OpenRouter skips (comma-separated; empty = none) |
 
 To follow DeepSeek's newest Flash release automatically, set
 `OPENROUTER_MODEL=~deepseek/deepseek-flash-latest` (an OpenRouter alias; the model can change
@@ -115,66 +118,68 @@ Custom callbacks receive content fields directly and should apply their own capt
 
 ## API
 
-`POST /api/chat`
+The conversation is kept on the server, in a **session**. The browser only stores the session id
+(in `localStorage`) and sends the new message; history, User Info, pending bank details and the
+summary live on the server (in memory for now: lost on restart, one server process only).
 
-```json
-{
-  "messages": [{ "role": "user", "content": "Hello" }],
-  "userInfo": { "profile": "Name: An", "purchaseHistory": "#123 shoes" }
-}
+| Endpoint                     | Body                            | Response                                                              |
+| ---------------------------- | ------------------------------- | --------------------------------------------------------------------- |
+| `POST /api/session`          | –                               | `201 { sessionId, messages: [], userInfo: {} }`                       |
+| `GET /api/session?id=…`      | –                               | `{ sessionId, messages, userInfo, summary? }`; `404` when unknown     |
+| `PUT /api/session/user-info` | `{ sessionId, userInfo }`       | `204`; only the parts sent are replaced                               |
+| `POST /api/chat`             | `{ sessionId?, message }`       | NDJSON events (below)                                                 |
+| `POST /api/payment-qr`       | multipart `sessionId` + `image` | `{ messages }` added to the chat; `400` / `422` `{ error, messages }` |
+
+`POST /api/chat` responds `200` with NDJSON (`application/x-ndjson`), one event per line:
+
 ```
-
-Responds `200` with NDJSON (`application/x-ndjson`), one event per line:
-
-```
-{"type":"summary","count":6,"content":"..."}   first, only when older messages were summarized
+{"type":"session","sessionId":"…"}             always first (a new session when the id is missing or unknown)
+{"type":"summary","count":6,"content":"..."}   when older messages were summarized
 {"type":"text","text":"Dạ em ..."}              chunks of the assistant reply
-{"type":"payment","payment":"Ngân hàng: ..."}   the update_bank_info tool saved new User Payment
+{"type":"payment","payment":"Ngân hàng: ..."}   the user confirmed: User Payment was saved
 ```
 
-Roles are `system`, `user` and `assistant`. The server prepends the system prompt from `packages/core/src/chat/prompt.ts` and drops client
-`system` messages.
+Errors are `{ "error": "..." }` with:
 
-`userInfo` is optional. Its keys are `profile`, `payment`, `purchaseHistory`, `commission` and
-`paymentHistory` (strings, max 10,000 characters each); non-blank ones are appended to the system
-prompt as `## User Info ##` sections. The UI fills it from **Settings → User Info**, saved in the
-browser. Errors are `{ "error": "..." }` with:
-
-- `400`: malformed request body, or over the limits: more than 1,000 messages, a message over
-  50,000 characters, or over 150,000 characters in total (the UI sends only the newest messages
-  within these limits)
+- `400`: malformed body (the message must be 1–50,000 characters)
+- `404`: unknown or expired session (`GET` / `PUT` / QR)
+- `409`: a reply for this session is already in progress
 - `500`: provider misconfigured (e.g. `OPENROUTER_API_KEY` not set)
 - `502`: the provider failed before replying (invalid key, unknown model, rate limit, ...), or
   summarizing older messages failed
 
-History is kept within 4,000 estimated tokens (`HISTORY_TOKEN_BUDGET` in
-`packages/core/src/chat/context.ts`). Over that, the server keeps the newest messages (about half the
-budget), summarizes the older ones with the chat model (`SUMMARY_PROMPT`) and puts the summary in
-the system prompt under `## Conversation Summary ##`. This happens on every request over budget,
-so those replies take one extra LLM call. The `summary` event says the first `count` sent messages
-were replaced by `content`. The UI keeps showing all messages and adds a collapsible "Earlier
-conversation summarized" divider.
+User Info parts are `profile`, `payment`, `purchaseHistory`, `commission` and `paymentHistory`
+(strings, max 10,000 characters each); non-blank ones go into the system prompt as `## User Info ##`
+sections. The UI edits them in **Settings → User Info**.
 
-A failure after the reply has started aborts the stream; the UI keeps the partial reply.
+A session keeps the newest 1,000 messages / 150,000 characters and expires after 24 hours without
+activity (at most 1,000 sessions). History sent to the model is kept within 4,000 estimated tokens
+(`HISTORY_TOKEN_BUDGET` in `packages/core/src/chat/context.ts`): over that, the older messages are
+summarized with the chat model (`SUMMARY_PROMPT`, one extra LLM call per request over budget) and
+the summary goes into the system prompt under `## Conversation Summary ##`. The UI shows a
+collapsible "Earlier conversation summarized" divider.
 
-### Bank QR → User Payment
+A failure after the reply has started aborts the stream; the partial reply is kept (on screen and
+in the session).
 
-`POST /api/payment-qr` takes multipart form data with an `image` file (PNG, JPEG or WebP, max
-5 MB), finds the QR code and reads it as a VietQR. It responds `200` with
-`{ bin, bankCode?, bankShortName?, bankName?, accountNumber, accountName?, type }`, `400` for a bad
-upload, or `422` when there is no readable bank QR (no QR, not VietQR, checksum mismatch). The
-image is not stored.
+### Bank info: confirm before saving
 
-In the chat, the **QR** button uploads an image; the chat then shows `[Ảnh mã QR ngân hàng]` and
-the assistant reads the details back and asks for confirmation (plain chat text). The browser
-sends those details as `pendingPayment` with the following messages, and the system prompt tells
-the model they are waiting for confirmation.
+Bank info (User Payment) is never saved in the message where it first appears. The
+`update_bank_info` tool has three steps:
 
-The model saves bank info with the `update_bank_info` tool: `source: "qr"` when the user confirms
-the pending QR details (bank and account always come from the QR; only the holder name may come
-from the reply), or `source: "text"` when the user types a new bank account (the bank must match
-the bank list). On success the reply stream carries a `payment` event and the browser replaces User
-Payment.
+- `propose`: the user typed new bank details; the bank must match the bank list. They become the
+  session's **pending** details, nothing is saved, and the assistant reads them back.
+- `confirm`: in a later message the user confirms; the pending details are saved exactly as read
+  back (only the holder name may be added). A `payment` event updates the Settings panel.
+- `cancel`: the user declines; the pending details are discarded.
+
+The code enforces this: `confirm` only saves details that were pending when the request arrived,
+and is refused after a `propose` or `cancel` in the same message.
+
+The **QR** button is the other way to get pending details: `POST /api/payment-qr` reads the image
+as a VietQR (checksum checked, image not stored), makes its details pending and adds
+`[Ảnh mã QR ngân hàng]` plus the read-back to the chat. The user then confirms or declines as
+above.
 
 ## Documents (RAG)
 

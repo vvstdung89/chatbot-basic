@@ -122,46 +122,50 @@ describe('runChat', () => {
     ]);
   });
 
-  it('sends a payment event before the text that follows update_bank_info', async () => {
+  it('sends tool events before the text that follows: propose → pending_payment', async () => {
     const { provider } = fakeProvider(async function* (_, tools) {
       yield 'Dạ em ';
       await tool(tools, 'update_bank_info').run({
-        source: 'text',
+        step: 'propose',
         bank: 'Techcombank',
         accountNumber: '19031234567',
       });
-      yield 'đã lưu ạ.';
+      yield 'đọc lại ạ.';
     });
 
     const events = await collect(
       runChat({ messages: [user('đổi STK')], userInfo: {} }, { provider }),
     );
 
-    expect(events.map((e) => e.type)).toEqual(['text', 'payment', 'text']);
-    expect(events[1]).toEqual({
-      type: 'payment',
-      payment:
-        'Ngân hàng: Techcombank (Ngân hàng TMCP Kỹ thương Việt Nam)\nSố tài khoản: 19031234567',
+    expect(events.map((e) => e.type)).toEqual(['text', 'pending_payment', 'text']);
+    expect(events[1]).toMatchObject({
+      type: 'pending_payment',
+      pending: { bankShortName: 'Techcombank', accountNumber: '19031234567' },
     });
   });
 
-  it('puts pending QR details in the prompt and saves them with source "qr"', async () => {
-    const { provider, calls } = fakeProvider(async function* (_, tools) {
-      await tool(tools, 'update_bank_info').run({ source: 'qr', accountName: 'Nguyễn Văn An' });
-      yield 'Dạ xong ạ.';
-    });
+  it('puts pending details in the prompt; confirm → payment, cancel → pending_payment null', async () => {
+    const run = (step: string) => {
+      const { provider, calls } = fakeProvider(async function* (_, tools) {
+        await tool(tools, 'update_bank_info').run({ step, accountName: 'Nguyễn Văn An' });
+        yield 'Dạ xong ạ.';
+      });
+      const events = collect(
+        runChat({ messages: [user('trả lời')], userInfo: {}, pendingPayment }, { provider }),
+      );
+      return { calls, events };
+    };
 
-    const events = await collect(
-      runChat({ messages: [user('đúng rồi')], userInfo: {}, pendingPayment }, { provider }),
-    );
-
-    expect(calls[0]?.messages[0]?.content).toContain('## Pending Bank Details ##');
-    expect(events[0]).toEqual({
+    const confirmed = run('confirm');
+    expect((await confirmed.events)[0]).toEqual({
       type: 'payment',
       payment:
         'Ngân hàng: Vietcombank (Ngân hàng TMCP Ngoại Thương Việt Nam)\n' +
         'Số tài khoản: 0123456789\nChủ tài khoản: NGUYEN VAN AN',
     });
+    expect(confirmed.calls[0]?.messages[0]?.content).toContain('## Pending Bank Details ##');
+
+    expect((await run('cancel').events)[0]).toEqual({ type: 'pending_payment', pending: null });
   });
 
   it('summarizes a history over budget: summary event first, summary in the prompt', async () => {

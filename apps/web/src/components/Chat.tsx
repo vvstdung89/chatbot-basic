@@ -4,13 +4,9 @@ import { Fragment, useEffect, useRef } from 'react';
 import { Composer } from './Composer';
 import { useChat } from './useChat';
 import { UserInfoSettings } from './UserInfoSettings';
-import { useUserInfo } from './useUserInfo';
 
 export function Chat() {
-  const { userInfo, updateUserInfo } = useUserInfo();
-  const { messages, pending, error, summary, send, uploadQr } = useChat(userInfo, (payment) =>
-    updateUserInfo('payment', payment),
-  );
+  const { messages, pending, error, summary, userInfo, updateUserInfo, send, uploadQr } = useChat();
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {

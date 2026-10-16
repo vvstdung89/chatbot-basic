@@ -30,14 +30,19 @@ afterEach(() => {
 const request = () =>
   new Request('http://localhost/api/chat', {
     method: 'POST',
-    body: JSON.stringify({ messages: [{ role: 'user', content: 'PRIVATE 0123456789' }] }),
+    body: JSON.stringify({ message: 'PRIVATE 0123456789' }),
   });
 
 describe('chat request traces', () => {
   it('correlates concurrent requests, ends after streaming and excludes content in production', async () => {
     const responses = await Promise.all([POST(request()), POST(request())]);
     for (const response of responses) {
-      expect(await response.text()).toBe('{"type":"text","text":"hello"}\n');
+      const lines = (await response.text())
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { type: string });
+      expect(lines.map((event) => event.type)).toEqual(['session', 'text']);
+      expect(lines[1]).toEqual({ type: 'text', text: 'hello' });
       const events = records.filter(
         (event) => event.requestId === response.headers.get('x-request-id'),
       );

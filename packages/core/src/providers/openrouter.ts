@@ -14,6 +14,11 @@ export interface OpenRouterProviderOptions {
   /** Any model id from https://openrouter.ai/models. Default: DeepSeek V4.1 Flash. */
   model?: string;
   baseURL?: string;
+  /**
+   * Upstream providers OpenRouter should not route to (slugs such as "sail-research"), e.g. ones
+   * that drop optional tool arguments. See docs/bug_report/openrouter-provider-drops-tool-arguments.md.
+   */
+  ignoreProviders?: string[];
 }
 
 interface ToolCall {
@@ -26,10 +31,17 @@ interface ToolCall {
 export class OpenRouterProvider implements ChatProvider {
   readonly name = 'openrouter';
   readonly model: string;
+  readonly ignoreProviders: readonly string[];
   readonly #client: OpenAI;
 
-  constructor({ apiKey, model, baseURL = OPENROUTER_BASE_URL }: OpenRouterProviderOptions) {
+  constructor({
+    apiKey,
+    model,
+    baseURL = OPENROUTER_BASE_URL,
+    ignoreProviders = [],
+  }: OpenRouterProviderOptions) {
     this.model = model || DEFAULT_OPENROUTER_MODEL;
+    this.ignoreProviders = ignoreProviders;
     this.#client = new OpenAI({ apiKey, baseURL });
   }
 
@@ -64,6 +76,10 @@ export class OpenRouterProvider implements ChatProvider {
             messages: history,
             stream: true,
             ...(offerTools && { tools: tools.map(toOpenAITool) }),
+            // OpenRouter routing option, passed through in the request body.
+            ...(this.ignoreProviders.length > 0 && {
+              provider: { ignore: [...this.ignoreProviders] },
+            }),
           },
           { signal },
         );

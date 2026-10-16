@@ -1,4 +1,5 @@
 import type { TraceCallback } from './chat/trace';
+import type { PaymentQrInfo } from './payment/vietqr';
 
 export type ChatRole = 'system' | 'user' | 'assistant';
 
@@ -37,11 +38,15 @@ export interface ChatProvider {
   streamChat(messages: ChatMessage[], options?: ChatOptions): AsyncIterable<string>;
 }
 
-/** One line of the POST /api/chat NDJSON response. */
+/** One line of the POST /api/chat NDJSON response (`pending_payment` stays on the server). */
 export type ChatEvent =
-  /** Older messages were summarized; the first `count` sent messages are replaced. */
+  /** First event: the session this conversation is kept in (new when the sent id was unknown). */
+  | { type: 'session'; sessionId: string }
+  /** Older messages were summarized; the first `count` messages of the history are replaced. */
   | { type: 'summary'; count: number; content: string }
   /** A chunk of the assistant's reply. */
   | { type: 'text'; text: string }
   /** update_bank_info saved new User Payment text. */
-  | { type: 'payment'; payment: string };
+  | { type: 'payment'; payment: string }
+  /** update_bank_info proposed (details) or cancelled (null) the pending bank details. */
+  | { type: 'pending_payment'; pending: PaymentQrInfo | null };
