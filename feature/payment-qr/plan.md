@@ -24,3 +24,6 @@
    `X-Payment-Update` to `userInfo.payment`.
 10. `README.md`, `CODEMAP.md`; `pnpm test`, `pnpm typecheck`, `pnpm build`; live run: upload a
     generated VietQR image, confirm in Vietnamese, check the header and the reply.
+
+> Steps 6, 8 and 9 (classifier step, `X-Payment-Update` header) were later replaced by the
+> `update_bank_info` tool and the NDJSON event stream: see `feature/bank-info-tool/`.

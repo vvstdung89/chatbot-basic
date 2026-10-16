@@ -1,7 +1,7 @@
 'use client';
 
 import { Fragment, useEffect, useRef, useState, type FormEvent } from 'react';
-import type { ChatMessage, HistorySummary, PaymentStatus } from '@chatbot/core';
+import type { ChatEvent, ChatMessage, HistorySummary } from '@chatbot/core';
 import {
   MAX_USER_INFO_LENGTH,
   USER_INFO_SECTIONS,
@@ -80,21 +80,28 @@ export function Chat() {
         const data = (await res.json().catch(() => null)) as { error?: string } | null;
         throw new Error(data?.error ?? `Request failed (${res.status})`);
       }
-      const header = res.headers.get('X-Chat-Summary');
-      setSummary(header ? (JSON.parse(decodeURIComponent(header)) as HistorySummary) : null);
-      const update = res.headers.get('X-Payment-Update');
-      if (update) {
-        const payment = JSON.parse(decodeURIComponent(update)) as PaymentStatus;
-        if (payment.status === 'confirmed') updateUserInfo('payment', payment.payment);
-        setPendingPayment(null);
-      }
+      setSummary(null);
 
+      // NDJSON: one ChatEvent per line; a read can end mid-line, so keep the rest for later.
       const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+      let buffer = '';
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
-        reply += value;
-        setMessages([...history, { role: 'assistant', content: reply }]);
+        const lines = (buffer + value).split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines.filter(Boolean)) {
+          const event = JSON.parse(line) as ChatEvent;
+          if (event.type === 'text') {
+            reply += event.text;
+            setMessages([...history, { role: 'assistant', content: reply }]);
+          } else if (event.type === 'summary') {
+            setSummary({ count: event.count, content: event.content });
+          } else if (event.type === 'payment') {
+            updateUserInfo('payment', event.payment);
+            setPendingPayment(null);
+          }
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

@@ -3,20 +3,19 @@ import {
   ChatRequestError,
   createSummarizer,
   fitHistory,
-  formatPaymentInfo,
   getProvider,
   parseMessages,
   parsePendingPayment,
   parseUserInfo,
-  resolvePendingPayment,
   searchDocumentsTool,
+  updateBankInfoTool,
+  type ChatEvent,
   type ChatMessage,
   type ChatProvider,
   type HistorySummary,
   type PaymentQrInfo,
-  type PaymentStatus,
   type UserInfo,
-  withPaymentStatus,
+  withPendingPayment,
   withSummary,
   withSystemPrompt,
 } from '@chatbot/core';
@@ -25,11 +24,10 @@ import { knowledge } from '@/lib/knowledge';
 /**
  * POST /api/chat
  * Body: { messages: ChatMessage[], userInfo?: UserInfo, pendingPayment?: PaymentQrInfo }
- * Response: the assistant reply, streamed as plain UTF-8 text. The model may search the
- * knowledge documents (via tool calls) before replying. When older messages were summarized,
- * the X-Chat-Summary header holds encodeURIComponent(JSON.stringify({ count, content })).
- * With pendingPayment (QR details awaiting confirmation), the latest user message is classified;
- * when it confirms or declines, X-Payment-Update holds encodeURIComponent(JSON.stringify(status)).
+ * Response: NDJSON, one ChatEvent per line: "summary" (older messages were summarized), "text"
+ * (reply chunks) and "payment" (update_bank_info saved new User Payment text). The model may call
+ * tools (search_documents, update_bank_info) while replying; pendingPayment holds QR details
+ * awaiting the user's confirmation.
  * Errors: { error: string } with 400 (bad request), 500 (misconfigured), 502 (provider failed).
  */
 export async function POST(request: Request): Promise<Response> {
@@ -66,25 +64,21 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ error: `${provider.name}: ${errorMessage(err)}` }, { status: 502 });
   }
 
-  // QR payment details awaiting confirmation: classify the user's reply (an extra LLM call).
-  let payment: PaymentStatus | undefined;
-  if (pendingPayment) {
-    const reply = messages.findLast((m) => m.role === 'user')?.content ?? '';
-    try {
-      payment = await resolvePendingPayment(provider, pendingPayment, reply, request.signal);
-    } catch (err) {
-      console.error(`[chat] ${provider.name} payment confirmation failed:`, err);
-      payment = { status: 'pending', payment: formatPaymentInfo(pendingPayment) };
-    }
-    if (payment.status === 'confirmed') userInfo = { ...userInfo, payment: payment.payment };
-  }
-
   const prompt = withSummary(buildSystemPrompt(userInfo), summary?.content);
-  messages = withSystemPrompt(messages, withPaymentStatus(prompt, payment));
+  messages = withSystemPrompt(messages, withPendingPayment(prompt, pendingPayment));
+
+  // Tools run while the reply streams; their events are sent before the next text chunk.
+  const events: ChatEvent[] = summary ? [{ type: 'summary', ...summary }] : [];
+  const tools = [
+    ...(knowledge.files().length > 0 ? [searchDocumentsTool(knowledge)] : []),
+    updateBankInfoTool({
+      pending: pendingPayment,
+      onUpdate: (payment) => events.push({ type: 'payment', payment }),
+    }),
+  ];
 
   // Wait for the first chunk so upstream failures (bad key, unknown model, rate limit)
   // become an HTTP error rather than a 200 response whose stream breaks.
-  const tools = knowledge.files().length > 0 ? [searchDocumentsTool(knowledge)] : [];
   const chunks = provider
     .streamChat(messages, { signal: request.signal, tools })
     [Symbol.asyncIterator]();
@@ -96,33 +90,34 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ error: `${provider.name}: ${errorMessage(err)}` }, { status: 502 });
   }
 
-  return new Response(toTextStream(first, chunks), {
+  return new Response(toEventStream(events, first, chunks), {
     headers: {
-      'Content-Type': 'text/plain; charset=utf-8',
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
       'Cache-Control': 'no-store',
-      ...(summary && { 'X-Chat-Summary': encodeURIComponent(JSON.stringify(summary)) }),
-      ...(payment &&
-        payment.status !== 'pending' && {
-          'X-Payment-Update': encodeURIComponent(JSON.stringify(payment)),
-        }),
     },
   });
 }
 
-/** Pull-based so the provider only generates as fast as the client reads. */
-function toTextStream(
+/**
+ * Pull-based so the provider only generates as fast as the client reads. Events queued by tools
+ * while a chunk was produced are sent before that chunk, in order.
+ */
+function toEventStream(
+  events: ChatEvent[],
   first: IteratorResult<string>,
   rest: AsyncIterator<string>,
 ): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
-  let pending: IteratorResult<string> | undefined = first;
+  const line = (event: ChatEvent) => encoder.encode(`${JSON.stringify(event)}\n`);
+  let next: IteratorResult<string> | undefined = first;
   return new ReadableStream({
     async pull(controller) {
       try {
-        const result = pending ?? (await rest.next());
-        pending = undefined;
+        const result = next ?? (await rest.next());
+        next = undefined;
+        for (const event of events.splice(0)) controller.enqueue(line(event));
         if (result.done) controller.close();
-        else controller.enqueue(encoder.encode(result.value));
+        else controller.enqueue(line({ type: 'text', text: result.value }));
       } catch (err) {
         console.error('[chat] stream failed:', err);
         controller.error(err);

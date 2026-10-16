@@ -25,3 +25,5 @@
       FAQ and asked again (7.3s); "thôi khỏi, hủy đi em" → declined (2.5s)
 - [x] `README.md`, `CODEMAP.md` updated
 - [ ] Owner checks the flow in the browser with a real bank QR photo
+- [x] Confirmation moved from the classifier step to the `update_bank_info` tool
+      (`feature/bank-info-tool/`); spec updated

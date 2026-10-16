@@ -13,12 +13,6 @@ export interface PaymentQrInfo {
   type: 'account' | 'card';
 }
 
-/** Outcome of the user's reply while QR details wait for confirmation. */
-export type PaymentStatus =
-  | { status: 'confirmed'; payment: string }
-  | { status: 'declined' }
-  | { status: 'pending'; payment: string };
-
 /** Thrown when a QR payload is not a valid VietQR; the message is safe to show the user. */
 export class PaymentQrError extends Error {
   override name = 'PaymentQrError';
@@ -52,7 +46,7 @@ export function parseVietQR(payload: string): PaymentQrInfo {
     throw new PaymentQrError('Not a bank QR code (VietQR)');
   }
 
-  const bank = banks.find((b) => b.bin === bin);
+  const bank = findBank(bin);
   const accountName = fields.get('59')?.trim();
   return {
     bin,
@@ -63,11 +57,32 @@ export function parseVietQR(payload: string): PaymentQrInfo {
   };
 }
 
+export type Bank = (typeof banks)[number];
+
+/**
+ * Finds a bank in banks.json by code, short name, full name or BIN, ignoring case, diacritics,
+ * spaces and punctuation ("vcb", "Vietcombank", "970436").
+ */
+export function findBank(query: string): Bank | undefined {
+  const key = bankKey(query);
+  if (!key) return undefined;
+  return banks.find((b) => [b.bin, b.code, b.shortName, b.name].some((v) => bankKey(v) === key));
+}
+
+function bankKey(text: string): string {
+  return text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[đĐ]/g, 'd')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+}
+
 /** Writes a name the way banks print it: upper case, no diacritics, single spaces. */
 export function normalizeAccountName(name: string): string {
   return name
     .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
+    .replace(/[\u0300-\u036f]/g, '')
     .replace(/đ/g, 'd')
     .replace(/Đ/g, 'D')
     .toUpperCase()

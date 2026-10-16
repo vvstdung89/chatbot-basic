@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  findBank,
   formatPaymentInfo,
   normalizeAccountName,
   parseVietQR,
@@ -125,5 +126,24 @@ describe('paymentReadFailed', () => {
       'Dạ em chưa đọc được mã QR ngân hàng từ ảnh này ạ (No QR code found in the image). ' +
         'Anh/chị gửi lại ảnh rõ nét hơn giúp em nhé.',
     );
+  });
+});
+
+describe('findBank', () => {
+  it.each([['vcb'], [' Vietcombank '], ['Ngan hang TMCP Ngoai thuong Viet Nam'], ['970436']])(
+    'finds Vietcombank by %j',
+    (query) => {
+      expect(findBank(query)).toEqual({
+        bin: '970436',
+        code: 'VCB',
+        shortName: 'Vietcombank',
+        name: 'Ngân hàng TMCP Ngoại Thương Việt Nam',
+      });
+    },
+  );
+
+  it('returns undefined for an unknown bank', () => {
+    expect(findBank('Ngân hàng ABC')).toBeUndefined();
+    expect(findBank('')).toBeUndefined();
   });
 });

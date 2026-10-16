@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildSystemPrompt,
   SYSTEM_PROMPT,
-  withPaymentStatus,
+  withPendingPayment,
   withSummary,
   withSystemPrompt,
 } from './prompt';
@@ -73,27 +73,24 @@ describe('withSummary', () => {
   });
 });
 
-describe('withPaymentStatus', () => {
-  const payment = 'Ngân hàng: Vietcombank\nSố tài khoản: 0123456789';
+describe('withPendingPayment', () => {
+  const pending = {
+    bin: '970436',
+    bankShortName: 'Vietcombank',
+    bankName: 'Ngân hàng TMCP Ngoại Thương Việt Nam',
+    accountNumber: '0123456789',
+    type: 'account' as const,
+  };
 
-  it('tells the assistant the payment info was updated', () => {
-    const prompt = withPaymentStatus('Be brief.', { status: 'confirmed', payment });
-    expect(prompt).toMatch(/^Be brief\.\n\n## Payment Update ##\n/);
-    expect(prompt).toContain(payment);
-    expect(prompt).toContain('updated');
+  it('describes the pending QR details and how to save them', () => {
+    const prompt = withPendingPayment('Be brief.', pending);
+    expect(prompt).toMatch(/^Be brief\.\n\n## Pending Bank Details ##\n/);
+    expect(prompt).toContain('Số tài khoản: 0123456789');
+    expect(prompt).toContain('update_bank_info');
+    expect(prompt).toContain('"qr"');
   });
 
-  it('tells the assistant the update was declined', () => {
-    expect(withPaymentStatus('Be brief.', { status: 'declined' })).toContain('declined');
-  });
-
-  it('tells the assistant a confirmation is still pending', () => {
-    const prompt = withPaymentStatus('Be brief.', { status: 'pending', payment });
-    expect(prompt).toContain('waiting for the user');
-    expect(prompt).toContain(payment);
-  });
-
-  it('returns the prompt unchanged without a status', () => {
-    expect(withPaymentStatus('Be brief.', undefined)).toBe('Be brief.');
+  it('returns the prompt unchanged without pending details', () => {
+    expect(withPendingPayment('Be brief.', undefined)).toBe('Be brief.');
   });
 });

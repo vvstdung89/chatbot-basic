@@ -31,7 +31,7 @@ A streaming chatbot in TypeScript. By default it talks to
 │           ├── vietqr.ts               Bank QR (VietQR) parsing and chat texts (browser-safe)
 │           ├── banks.json              Bank list (BIN → name)
 │           ├── qr-image.ts             Find the QR in an image (sharp + jsqr, server only)
-│           ├── payment-confirm.ts      Classify the reply to a QR read-back
+│           ├── bank-tool.ts            update_bank_info tool (save User Payment)
 │           ├── knowledge.ts            Document search (chunking, embeddings, tool)
 │           └── providers/
 │               ├── index.ts            Provider registry (getProvider, getEmbedder)
@@ -92,8 +92,15 @@ under you).
 }
 ```
 
-Responds `200` with the assistant reply streamed as `text/plain`. Roles are `system`, `user` and
-`assistant`. The server prepends the system prompt from `packages/core/src/prompt.ts` and drops client
+Responds `200` with NDJSON (`application/x-ndjson`), one event per line:
+
+```
+{"type":"summary","count":6,"content":"..."}   first, only when older messages were summarized
+{"type":"text","text":"Dạ em ..."}              chunks of the assistant reply
+{"type":"payment","payment":"Ngân hàng: ..."}   the update_bank_info tool saved new User Payment
+```
+
+Roles are `system`, `user` and `assistant`. The server prepends the system prompt from `packages/core/src/prompt.ts` and drops client
 `system` messages.
 
 `userInfo` is optional. Its keys are `profile`, `payment`, `purchaseHistory`, `commission` and
@@ -110,9 +117,8 @@ History is kept within 4,000 estimated tokens (`HISTORY_TOKEN_BUDGET` in
 `packages/core/src/context.ts`). Over that, the server keeps the newest messages (about half the
 budget), summarizes the older ones with the chat model (`SUMMARY_PROMPT`) and puts the summary in
 the system prompt under `## Conversation Summary ##`. This happens on every request over budget,
-so those replies take one extra LLM call. The response header `X-Chat-Summary` is
-`encodeURIComponent(JSON.stringify({ count, content }))`: the first `count` sent messages were
-replaced by `content`. The UI keeps showing all messages and adds a collapsible "Earlier
+so those replies take one extra LLM call. The `summary` event says the first `count` sent messages
+were replaced by `content`. The UI keeps showing all messages and adds a collapsible "Earlier
 conversation summarized" divider.
 
 A failure after the reply has started aborts the stream; the UI keeps the partial reply.
@@ -127,11 +133,14 @@ image is not stored.
 
 In the chat, the **QR** button uploads an image; the chat then shows `[Ảnh mã QR ngân hàng]` and
 the assistant reads the details back and asks for confirmation (plain chat text). The browser
-sends those details as `pendingPayment` with the following messages; the server classifies each
-reply with one extra LLM call (`PAYMENT_CONFIRM_PROMPT`). On confirm or decline the response
-header `X-Payment-Update` is `encodeURIComponent(JSON.stringify({ status, payment? }))` and the
-browser replaces User Payment (confirm) or drops the pending details (decline). Bank and account
-always come from the QR; only the account holder name may come from the user's reply.
+sends those details as `pendingPayment` with the following messages, and the system prompt tells
+the model they are waiting for confirmation.
+
+The model saves bank info with the `update_bank_info` tool: `source: "qr"` when the user confirms
+the pending QR details (bank and account always come from the QR; only the holder name may come
+from the reply), or `source: "text"` when the user types a new bank account (the bank must match
+the bank list). On success the reply stream carries a `payment` event and the browser replaces User
+Payment.
 
 ## Documents (RAG)
 

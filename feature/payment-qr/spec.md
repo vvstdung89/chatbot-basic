@@ -33,13 +33,10 @@ Composer [QR] ──▶ pick an image (PNG / JPEG / WebP, max 5 MB)
         On 422/400 the assistant message says the QR could not be read and why.
   ──▶ the browser keeps the read info as `pendingPayment` and sends it with each /api/chat
       request until it is confirmed, declined or replaced by a new upload
-  ──▶ POST /api/chat with pendingPayment: one extra LLM call classifies the latest user message
-      with PAYMENT_CONFIRM_PROMPT → { decision: confirm | decline | unclear, accountName? }
-        confirm: header X-Payment-Update = { status: "confirmed", payment: formatPaymentInfo(...) }
-                 system prompt notes the update so the assistant tells the user it is done
-        decline: header X-Payment-Update = { status: "declined" }; system prompt notes it
-        unclear: no header; system prompt notes the confirmation is still pending
-  ──▶ browser: confirmed → User Payment (localStorage) replaced; declined → pending cleared
+  ──▶ POST /api/chat with pendingPayment: the system prompt lists the pending details; when the
+      user confirms, the model calls update_bank_info with source "qr" (see
+      feature/bank-info-tool/, which replaced the earlier classifier step)
+  ──▶ "payment" event in the reply stream → User Payment (localStorage) replaced, pending cleared
 ```
 
 User Payment text written on confirm (`formatPaymentInfo`):
@@ -53,14 +50,13 @@ Chủ tài khoản: <name>                      (left out when unknown)
 ## Rules
 
 - QR reading is deterministic (decode + EMVCo parsing). Bank and account number shown and saved
-  always come from the QR, never from LLM output; the LLM only classifies the reply and may supply
+  always come from the QR, never from LLM output; the model only decides when to save and may supply
   the account holder name the user typed.
 - VietQR = tag 38 with GUID `A000000727`; bank BIN in 38›01›00, account/card number in 38›01›01,
   service code in 38›02 (`QRIBFTTA` account, `QRIBFTTC` card); name in tag 59 when present.
   Amount / note (tags 54, 62) are ignored. The CRC (tag 63, CRC-16/CCITT-FALSE) must match.
 - A BIN missing from the bank list is still returned (bank name fields empty).
 - `pendingPayment` from the browser is validated like other input (shape, lengths).
-- If classifying fails, the request continues as if the reply were unclear (logged).
 - The image is processed in memory and not stored or logged.
 
 ## Bank list

@@ -32,3 +32,12 @@ export interface ChatProvider {
   readonly name: string;
   streamChat(messages: ChatMessage[], options?: ChatOptions): AsyncIterable<string>;
 }
+
+/** One line of the POST /api/chat NDJSON response. */
+export type ChatEvent =
+  /** Older messages were summarized; the first `count` sent messages are replaced. */
+  | { type: 'summary'; count: number; content: string }
+  /** A chunk of the assistant's reply. */
+  | { type: 'text'; text: string }
+  /** update_bank_info saved new User Payment text. */
+  | { type: 'payment'; payment: string };
