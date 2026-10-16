@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import type { ChatMessage, ChatOptions, ChatProvider, ChatTool, Embedder } from '../types';
+import { emitTrace } from '../chat/trace';
 
 export const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 export const DEFAULT_OPENROUTER_MODEL = 'deepseek/deepseek-v4.1-flash';
@@ -38,57 +39,116 @@ export class OpenRouterProvider implements ChatProvider {
    */
   async *streamChat(
     messages: ChatMessage[],
-    { signal, tools = [] }: ChatOptions = {},
+    { signal, tools = [], onTrace }: ChatOptions = {},
   ): AsyncIterable<string> {
     const history: OpenAI.Chat.ChatCompletionMessageParam[] = [...messages];
     // Models often write blank lines before (or alongside) a tool call; the reply starts at text.
     let started = false;
 
-    for (let round = 0; ; round++) {
-      const offerTools = tools.length > 0 && round < MAX_TOOL_ROUNDS;
-      const stream = await this.#client.chat.completions.create(
-        {
+    let round = 0;
+    try {
+      for (; ; round++) {
+        const offerTools = tools.length > 0 && round < MAX_TOOL_ROUNDS;
+        emitTrace(onTrace, {
+          type: 'model.start',
+          phase: 'answer',
+          round,
           model: this.model,
-          messages: history,
-          stream: true,
-          ...(offerTools && { tools: tools.map(toOpenAITool) }),
-        },
-        { signal },
-      );
+          messages: history.length,
+          tools: offerTools ? tools.map((tool) => tool.name) : [],
+        });
+        const start = performance.now();
+        const stream = await this.#client.chat.completions.create(
+          {
+            model: this.model,
+            messages: history,
+            stream: true,
+            ...(offerTools && { tools: tools.map(toOpenAITool) }),
+          },
+          { signal },
+        );
 
-      const calls = new Map<number, ToolCall>();
-      for await (const chunk of stream) {
-        // Reasoning arrives in a separate delta field; only the answer is streamed.
-        const delta = chunk.choices[0]?.delta;
-        const text = started ? delta?.content : delta?.content?.trimStart();
-        if (text) {
-          started = true;
-          yield text;
+        const calls = new Map<number, ToolCall>();
+        let finishReason: string | null = null;
+        let characters = 0;
+        for await (const chunk of stream) {
+          finishReason = chunk.choices[0]?.finish_reason ?? finishReason;
+          // Reasoning arrives in a separate delta field; only the answer is streamed.
+          const delta = chunk.choices[0]?.delta;
+          const text = started ? delta?.content : delta?.content?.trimStart();
+          if (text) {
+            characters += text.length;
+            started = true;
+            yield text;
+          }
+          // A tool call is announced with its id and name, then its arguments arrive in pieces.
+          for (const part of delta?.tool_calls ?? []) {
+            const call = calls.get(part.index) ?? { id: '', name: '', arguments: '' };
+            call.id ||= part.id ?? '';
+            call.name ||= part.function?.name ?? '';
+            call.arguments += part.function?.arguments ?? '';
+            calls.set(part.index, call);
+          }
         }
-        // A tool call is announced with its id and name, then its arguments arrive in pieces.
-        for (const part of delta?.tool_calls ?? []) {
-          const call = calls.get(part.index) ?? { id: '', name: '', arguments: '' };
-          call.id ||= part.id ?? '';
-          call.name ||= part.function?.name ?? '';
-          call.arguments += part.function?.arguments ?? '';
-          calls.set(part.index, call);
+        emitTrace(onTrace, {
+          type: 'model.end',
+          phase: 'answer',
+          round,
+          durationMs: Math.round(performance.now() - start),
+          finishReason,
+          characters,
+          toolCalls: calls.size,
+        });
+        if (calls.size === 0) return;
+
+        history.push({
+          role: 'assistant',
+          content: null,
+          tool_calls: [...calls.values()].map((call) => ({
+            id: call.id,
+            type: 'function',
+            function: { name: call.name, arguments: call.arguments },
+          })),
+        });
+        for (const call of calls.values()) {
+          const meta = { round, callId: call.id, tool: call.name };
+          const privateTool = call.name === 'update_bank_info';
+          emitTrace(onTrace, {
+            type: 'tool.start',
+            ...meta,
+            ...(!privateTool && { content: { arguments: call.arguments } }),
+          });
+          const toolStart = performance.now();
+          let content: string;
+          try {
+            content = await runTool(tools, call, signal);
+          } catch (err) {
+            emitTrace(onTrace, {
+              type: 'tool.end',
+              ...meta,
+              status: signal?.aborted ? 'aborted' : 'error',
+              durationMs: Math.round(performance.now() - toolStart),
+            });
+            throw err;
+          }
+          emitTrace(onTrace, {
+            type: 'tool.end',
+            ...meta,
+            status: content.startsWith('Error:') ? 'error' : 'ok',
+            durationMs: Math.round(performance.now() - toolStart),
+            ...(!privateTool && { content: { result: content } }),
+          });
+          history.push({ role: 'tool', tool_call_id: call.id, content });
         }
       }
-      if (calls.size === 0) return;
-
-      history.push({
-        role: 'assistant',
-        content: null,
-        tool_calls: [...calls.values()].map((call) => ({
-          id: call.id,
-          type: 'function',
-          function: { name: call.name, arguments: call.arguments },
-        })),
+    } catch (err) {
+      emitTrace(onTrace, {
+        type: signal?.aborted ? 'provider.abort' : 'provider.error',
+        phase: 'answer',
+        round,
+        content: { error: err instanceof Error ? err.message : String(err) },
       });
-      for (const call of calls.values()) {
-        const content = await runTool(tools, call, signal);
-        history.push({ role: 'tool', tool_call_id: call.id, content });
-      }
+      throw err;
     }
   }
 }

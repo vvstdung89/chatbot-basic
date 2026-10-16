@@ -7,6 +7,7 @@ import { KnowledgeBase } from '../rag/knowledge';
 import type { ChatEvent, ChatMessage, ChatOptions, ChatProvider, ChatTool } from '../types';
 import { SUMMARY_PROMPT } from './prompt';
 import { runChat } from './run-chat';
+import type { TraceEvent } from './trace';
 
 type Reply = (messages: ChatMessage[], tools: ChatTool[]) => AsyncIterable<string>;
 
@@ -61,6 +62,26 @@ afterEach(() => {
 });
 
 describe('runChat', () => {
+  it('traces prompt preparation and first text without exposing payment prompt sections', async () => {
+    const trace: TraceEvent[] = [];
+    const { provider } = fakeProvider(() => chunks('hello', ' world'));
+    const events = await collect(
+      runChat(
+        { messages: [user('hi')], userInfo: { payment: 'PRIVATE BANK DETAILS' }, pendingPayment },
+        { provider, onTrace: (event) => trace.push(event) },
+      ),
+    );
+    expect(events.map((event) => event.type)).toEqual(['text', 'text']);
+    expect(trace.map((event) => event.type)).toEqual([
+      'history.start',
+      'history.ready',
+      'prompt.ready',
+      'response.first_text',
+    ]);
+    expect(JSON.stringify(trace)).not.toContain('PRIVATE BANK DETAILS');
+    expect(JSON.stringify(trace)).not.toContain(pendingPayment.accountNumber);
+  });
+
   it('streams the reply as text events, after a system prompt with User Info', async () => {
     const { provider, calls } = fakeProvider(() => chunks('Hel', 'lo'));
     const signal = new AbortController().signal;

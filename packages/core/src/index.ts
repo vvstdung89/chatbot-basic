@@ -8,6 +8,7 @@ export type {
   Embedder,
 } from './types';
 export { runChat, type RunChatOptions } from './chat/run-chat';
+export { createTrace, emitTrace, type TraceEvent, type TraceCallback } from './chat/trace';
 export { encodeChatEvent, readChatEvents } from './chat/events';
 export {
   ChatRequestError,

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createSummarizer, estimateTokens, fitHistory } from './context';
 import { SUMMARY_PROMPT } from './prompt';
 import type { ChatMessage, ChatOptions, ChatProvider } from '../types';
+import type { TraceEvent } from './trace';
 
 // 3 characters ≈ 1 token, so `chars` 30 is 10 tokens.
 const msg = (role: 'user' | 'assistant', chars: number, mark = ''): ChatMessage => ({
@@ -77,6 +78,25 @@ describe('fitHistory', () => {
 });
 
 describe('createSummarizer', () => {
+  it('marks provider events as summary calls', async () => {
+    const events: TraceEvent[] = [];
+    const provider: ChatProvider = {
+      name: 'fake',
+      async *streamChat(_messages, options) {
+        options?.onTrace?.({ type: 'model.start', phase: 'answer', round: 0 });
+        yield 'summary';
+      },
+    };
+    expect(await createSummarizer(provider, undefined, (event) => events.push(event))([])).toBe(
+      'summary',
+    );
+    expect(events).toEqual([
+      { type: 'summary.start', messages: 0 },
+      { type: 'model.start', phase: 'summary', round: 0 },
+      { type: 'summary.end', characters: 7 },
+    ]);
+  });
+
   it('asks the provider for a summary of the transcript and returns the trimmed text', async () => {
     const seen: { messages?: ChatMessage[]; options?: ChatOptions } = {};
     const provider: ChatProvider = {

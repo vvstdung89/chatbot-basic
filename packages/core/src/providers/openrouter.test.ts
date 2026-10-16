@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ChatMessage, ChatTool } from '../types';
+import type { TraceEvent } from '../chat/trace';
 import {
   createOpenRouterEmbedder,
   DEFAULT_OPENROUTER_EMBEDDING_MODEL,
@@ -144,6 +145,7 @@ describe('OpenRouterProvider', () => {
     }
 
     it('runs tool calls, sends the results back and streams the answer', async () => {
+      const trace: TraceEvent[] = [];
       const bodies: any[] = [];
       handler = (_req, body, res) => {
         bodies.push(JSON.parse(body));
@@ -160,10 +162,26 @@ describe('OpenRouterProvider', () => {
         return 'Refund: 7 days';
       });
 
-      expect(await collect(provider().streamChat(messages, { tools: [tool] }))).toBe(
-        'Refunds take 7 days.',
-      );
+      expect(
+        await collect(
+          provider().streamChat(messages, { tools: [tool], onTrace: (event) => trace.push(event) }),
+        ),
+      ).toBe('Refunds take 7 days.');
       expect(args).toEqual([{ q: 'refund' }]);
+      expect(trace.map((event) => event.type)).toEqual([
+        'model.start',
+        'model.end',
+        'tool.start',
+        'tool.end',
+        'model.start',
+        'model.end',
+      ]);
+      expect(trace[2]).toMatchObject({
+        callId: 'call_1',
+        round: 0,
+        content: { arguments: '{"q":"refund"}' },
+      });
+      expect(trace[3]).toMatchObject({ status: 'ok', content: { result: 'Refund: 7 days' } });
       expect(bodies[0].tools).toEqual([
         {
           type: 'function',
@@ -210,7 +228,30 @@ describe('OpenRouterProvider', () => {
       expect(chunks).toEqual(['Hi', '\n\nthere']);
     });
 
+    it('omits bank tool payloads and marks returned error strings as failures', async () => {
+      let requests = 0;
+      const trace: TraceEvent[] = [];
+      handler = (_req, _body, res) =>
+        sendEvents(
+          res,
+          requests++ === 0
+            ? toolCallEvents([
+                { id: 'bank', name: 'update_bank_info', args: '{"accountName":"PRIVATE"}' },
+              ])
+            : [delta({ content: 'Sorry' }), 'data: [DONE]\n\n'],
+        );
+      await collect(
+        provider().streamChat(messages, {
+          tools: [{ ...lookupTool(async () => 'Error: PRIVATE'), name: 'update_bank_info' }],
+          onTrace: (event) => trace.push(event),
+        }),
+      );
+      expect(trace.find((event) => event.type === 'tool.end')).toMatchObject({ status: 'error' });
+      expect(JSON.stringify(trace)).not.toContain('PRIVATE');
+    });
+
     it('reports failing and unknown tools to the model instead of failing', async () => {
+      const trace: TraceEvent[] = [];
       const bodies: any[] = [];
       handler = (_req, body, res) => {
         bodies.push(JSON.parse(body));
@@ -228,7 +269,14 @@ describe('OpenRouterProvider', () => {
         throw new Error('boom');
       });
 
-      expect(await collect(provider().streamChat(messages, { tools: [tool] }))).toBe('Sorry.');
+      expect(
+        await collect(
+          provider().streamChat(messages, { tools: [tool], onTrace: (event) => trace.push(event) }),
+        ),
+      ).toBe('Sorry.');
+      expect(
+        trace.filter((event) => event.type === 'tool.end').map((event) => event.status),
+      ).toEqual(['error', 'error']);
       expect(bodies[1].messages.slice(-2)).toEqual([
         { role: 'tool', tool_call_id: 'call_1', content: 'Error: boom' },
         { role: 'tool', tool_call_id: 'call_2', content: 'Error: unknown tool "missing"' },

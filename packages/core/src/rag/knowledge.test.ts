@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { chunkDocument, KnowledgeBase, searchDocumentsTool } from './knowledge';
 import type { Embedder } from '../types';
+import type { TraceEvent } from '../chat/trace';
 
 // Fake embedding: how often each vocabulary word appears, so similarity follows shared words.
 const VOCAB = ['refund', 'shipping', 'account'];
@@ -203,10 +204,21 @@ describe('searchDocumentsTool', () => {
   });
 
   it('returns labelled excerpts', async () => {
-    const tool = searchDocumentsTool(new KnowledgeBase({ dir, embed: fakeEmbedder().embed }));
+    const events: TraceEvent[] = [];
+    const tool = searchDocumentsTool(
+      new KnowledgeBase({ dir, embed: fakeEmbedder().embed }),
+      (event) => events.push(event),
+    );
     expect(await tool.run({ query: 'refund' })).toBe(
       '[faq.md › FAQ › Refund]\nAsk for a refund within 7 days.',
     );
+    expect(events).toMatchObject([
+      {
+        type: 'retrieval.end',
+        results: [{ file: 'faq.md', score: 1 }],
+        content: { query: 'refund' },
+      },
+    ]);
   });
 
   it('asks for a query when it is missing', async () => {

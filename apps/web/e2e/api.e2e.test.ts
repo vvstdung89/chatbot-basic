@@ -34,6 +34,7 @@ describe('e2e: production server with the echo provider', () => {
 
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('application/x-ndjson');
+    expect(res.headers.get('x-request-id')).toMatch(/^[a-f0-9-]{36}$/);
     const events: ChatEvent[] = [];
     for await (const event of readChatEvents(res.body!)) events.push(event);
     expect(events.every((e) => e.type === 'text')).toBe(true);

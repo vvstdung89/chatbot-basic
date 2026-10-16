@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ChatTool, Embedder } from '../types';
+import { emitTrace, type TraceCallback } from '../chat/trace';
 
 const DOCUMENT_FILE = /\.(md|txt)$/i;
 const MAX_CHUNK_LENGTH = 1500;
@@ -146,7 +147,7 @@ export class KnowledgeBase {
 }
 
 /** The `search_documents` tool the model calls to look things up in the knowledge base. */
-export function searchDocumentsTool(kb: KnowledgeBase): ChatTool {
+export function searchDocumentsTool(kb: KnowledgeBase, onTrace?: TraceCallback): ChatTool {
   return {
     name: 'search_documents',
     description:
@@ -169,6 +170,11 @@ export function searchDocumentsTool(kb: KnowledgeBase): ChatTool {
         return 'Error: a non-empty "query" string is required';
       }
       const results = await kb.search(query.trim(), { signal });
+      emitTrace(onTrace, {
+        type: 'retrieval.end',
+        results: results.map(({ file, heading, score }) => ({ file, heading, score })),
+        content: { query: query.trim() },
+      });
       if (results.length === 0) return 'No matching documents.';
       return results
         .map((r) => `[${[r.file, r.heading].filter(Boolean).join(' › ')}]\n${r.text}`)

@@ -40,6 +40,15 @@ useChat.uploadQr ── POST /api/payment-qr (multipart "image") ▶ app/api/pay
 
 Client disconnect aborts summarizing, generation and tools through `request.signal`.
 
+Optional diagnostics: `CHAT_DEBUG=1` creates a request-scoped `onTrace` callback in the chat route,
+adds `X-Request-Id` to the response, and logs JSON through `chat/trace.ts`. The callback follows
+`runChat` into summarization, the provider tool loop and document search. Events include request ID
+and elapsed milliseconds; model/tool events carry round/call identifiers and durations. The route
+records completion only when the stream finishes, or records an error/cancellation instead.
+`CHAT_DEBUG_CONTENT=1` includes content only in development; payment prompt fields and bank tool
+payloads are omitted, and long digit sequences are masked. Diagnostic events are separate from
+`ChatEvent` and are never sent in the NDJSON stream.
+
 At Node server startup, `src/instrumentation.ts` awaits `knowledge.prepare()` before requests
 are accepted. `src/lib/knowledge.ts` keeps the instance on `globalThis` so the startup hook and
 chat route reuse one in-memory index per process. Startup errors are logged; search retries.
@@ -93,6 +102,7 @@ Ships TypeScript source; no build step. Entry points:
 | `src/chat/prompt.ts`          | `SYSTEM_PROMPT` (the guardrail text, edit it here), `SUMMARY_PROMPT`; `buildSystemPrompt({ userInfo, summary, pendingPayment })`: prompt + sections in order (User Info, Conversation Summary, Pending Bank Details); `withSystemPrompt` puts it first and drops client `system` messages |
 | `src/chat/context.ts`         | History budget: `HISTORY_TOKEN_BUDGET` (4,000), `estimateTokens` (chars / 3), `fitHistory` (newest messages within half the budget, rest summarized into `{ count, content }`), `createSummarizer`                                                                                        |
 | `src/chat/events.ts`          | `encodeChatEvent` (one NDJSON line), `readChatEvents(body)` (browser-safe reader)                                                                                                                                                                                                         |
+| `src/chat/trace.ts`           | `TraceEvent`, `TraceCallback`, `emitTrace` (isolates callback errors), `createTrace` (JSON records, request ID, elapsed time, optional masked content)                                                                                                                                    |
 | `src/chat/user-info.ts`       | `USER_INFO_SECTIONS` (key + label of each User Info part), `UserInfo`, `MAX_USER_INFO_LENGTH`                                                                                                                                                                                             |
 | `src/rag/knowledge.ts`        | `chunkDocument` (by heading, then paragraphs ≤ 1,500 chars), `KnowledgeBase` (`files()`, `prepare()`, `search(query)`; in-memory index rebuilt when files change), `searchDocumentsTool`                                                                                                  |
 | `src/payment/vietqr.ts`       | VietQR/EMVCo: `parseVietQR` (CRC check, BIN/account from GUID `A000000727`, name from tag 59), `PaymentQrError`, `findBank`, `normalizeAccountName`, `formatPaymentInfo`, chat texts `QR_UPLOAD_MESSAGE` / `paymentReadBack` / `paymentReadFailed`, `PaymentQrInfo`                       |
@@ -105,21 +115,23 @@ Ships TypeScript source; no build step. Entry points:
 
 ## Tests (Vitest, `pnpm test`)
 
-| File                                             | Covers                                                                                                               |
-| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| `packages/core/src/client.test.ts`               | Nothing reachable from `client.ts` imports server-only code (and the check detects `index.ts`)                       |
-| `packages/core/src/chat/run-chat.test.ts`        | `runChat` with a fake provider: prompt, tools, event order, summary, QR save, failure before the reply               |
-| `packages/core/src/chat/events.test.ts`          | `encodeChatEvent` / `readChatEvents`, with lines and UTF-8 characters split across chunks                            |
-| `packages/core/src/chat/validate.test.ts`        | Body parsing, request limits, `trimHistory`                                                                          |
-| `packages/core/src/chat/prompt.test.ts`          | `withSystemPrompt`, `buildSystemPrompt` sections and order                                                           |
-| `packages/core/src/chat/context.test.ts`         | `estimateTokens`, `fitHistory` (fake summarizer, small budgets), `createSummarizer`                                  |
-| `packages/core/src/rag/knowledge.test.ts`        | `chunkDocument`, `KnowledgeBase` (preparation, reuse, concurrency, retry, changes), `searchDocumentsTool`            |
-| `packages/core/src/payment/vietqr.test.ts`       | `parseVietQR` on payloads with independently computed CRCs, `findBank`, chat texts, `formatPaymentInfo`              |
-| `packages/core/src/payment/qr-image.test.ts`     | `decodeQrImage` on generated PNGs, a rotated JPEG photo, a blank image, non-image data                               |
-| `packages/core/src/payment/bank-tool.test.ts`    | `updateBankInfoTool` for QR and text sources, errors                                                                 |
-| `packages/core/src/providers/providers.test.ts`  | `EchoProvider`, `getProvider`, `getEmbedder`                                                                         |
-| `packages/core/src/providers/openrouter.test.ts` | `OpenRouterProvider` (incl. tool loop) and the embedder against a local fake server                                  |
-| `apps/web/src/components/Chat.test.tsx`          | The chat UI with a stubbed `fetch`: sending, streaming, trimming + divider, QR flow, User Info edits during a stream |
+| File                                             | Covers                                                                                                                        |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| `packages/core/src/client.test.ts`               | Nothing reachable from `client.ts` imports server-only code (and the check detects `index.ts`)                                |
+| `packages/core/src/chat/trace.test.ts`           | Trace correlation, metadata-only logging, content masking, callback error isolation                                           |
+| `apps/web/src/app/api/chat/route.test.ts`        | Request correlation, disabled tracing, development/production content policy, validation/provider/stream errors, cancellation |
+| `packages/core/src/chat/run-chat.test.ts`        | `runChat` with a fake provider: prompt, tools, event order, summary, QR save, failure before the reply                        |
+| `packages/core/src/chat/events.test.ts`          | `encodeChatEvent` / `readChatEvents`, with lines and UTF-8 characters split across chunks                                     |
+| `packages/core/src/chat/validate.test.ts`        | Body parsing, request limits, `trimHistory`                                                                                   |
+| `packages/core/src/chat/prompt.test.ts`          | `withSystemPrompt`, `buildSystemPrompt` sections and order                                                                    |
+| `packages/core/src/chat/context.test.ts`         | `estimateTokens`, `fitHistory` (fake summarizer, small budgets), `createSummarizer`                                           |
+| `packages/core/src/rag/knowledge.test.ts`        | `chunkDocument`, `KnowledgeBase` (preparation, reuse, concurrency, retry, changes), `searchDocumentsTool`                     |
+| `packages/core/src/payment/vietqr.test.ts`       | `parseVietQR` on payloads with independently computed CRCs, `findBank`, chat texts, `formatPaymentInfo`                       |
+| `packages/core/src/payment/qr-image.test.ts`     | `decodeQrImage` on generated PNGs, a rotated JPEG photo, a blank image, non-image data                                        |
+| `packages/core/src/payment/bank-tool.test.ts`    | `updateBankInfoTool` for QR and text sources, errors                                                                          |
+| `packages/core/src/providers/providers.test.ts`  | `EchoProvider`, `getProvider`, `getEmbedder`                                                                                  |
+| `packages/core/src/providers/openrouter.test.ts` | `OpenRouterProvider` (incl. tool loop) and the embedder against a local fake server                                           |
+| `apps/web/src/components/Chat.test.tsx`          | The chat UI with a stubbed `fetch`: sending, streaming, trimming + divider, QR flow, User Info edits during a stream          |
 
 ## Config
 
@@ -148,6 +160,7 @@ Ships TypeScript source; no build step. Entry points:
 | Add or rename a User Info part                        | `USER_INFO_SECTIONS` in `chat/user-info.ts` (UI and prompt follow)                                                                                           |
 | Use core code in the browser                          | Export it from `src/client.ts` (the guard test checks it stays browser-safe)                                                                                 |
 | Change status codes or streaming                      | `apps/web/src/app/api/chat/route.ts`                                                                                                                         |
+| Change trace formatting or capture policy             | `packages/core/src/chat/trace.ts`, enablement and request lifecycle in `apps/web/src/app/api/chat/route.ts`                                                  |
 | Change chat UI behaviour or look                      | `useChat.ts` / components in `apps/web/src/components/`, `globals.css`                                                                                       |
 
 Sample searchable content: `apps/web/knowledge/faq.md` contains a Vietnamese Siêu Hoàn FAQ (17

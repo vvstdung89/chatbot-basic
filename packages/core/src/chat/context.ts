@@ -1,5 +1,6 @@
 import { SUMMARY_PROMPT } from './prompt';
 import type { ChatMessage, ChatProvider } from '../types';
+import { emitTrace, type TraceCallback } from './trace';
 
 /** Token budget for the conversation history sent to the model (system prompt not counted). */
 export const HISTORY_TOKEN_BUDGET = 4000;
@@ -61,8 +62,10 @@ export async function fitHistory(
 export function createSummarizer(
   provider: ChatProvider,
   signal?: AbortSignal,
+  onTrace?: TraceCallback,
 ): (messages: ChatMessage[]) => Promise<string> {
   return async (messages) => {
+    emitTrace(onTrace, { type: 'summary.start', messages: messages.length });
     const transcript = messages
       .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
       .join('\n\n');
@@ -72,10 +75,14 @@ export function createSummarizer(
         { role: 'system', content: SUMMARY_PROMPT },
         { role: 'user', content: transcript },
       ],
-      { signal },
+      {
+        signal,
+        onTrace: onTrace && ((event) => emitTrace(onTrace, { ...event, phase: 'summary' })),
+      },
     )) {
       summary += chunk;
     }
+    emitTrace(onTrace, { type: 'summary.end', characters: summary.trim().length });
     return summary.trim();
   };
 }

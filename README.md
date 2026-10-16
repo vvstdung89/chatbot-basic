@@ -73,6 +73,34 @@ To follow DeepSeek's newest Flash release automatically, set
 `OPENROUTER_MODEL=~deepseek/deepseek-flash-latest` (an OpenRouter alias; the model can change
 under you).
 
+## Debugging the agent flow
+
+Set `CHAT_DEBUG=1` in `apps/web/.env.local`, restart `pnpm dev`, and send a message. The server
+terminal prints one JSON trace record per step. Match its `requestId` to the chat response's
+`X-Request-Id` header in browser DevTools → Network → `/api/chat`.
+
+Records include `elapsedMs` since the request started, history counts, summary steps, offered tools,
+model rounds (zero-based), tool call IDs/status/duration, retrieved files/headings/scores, first text,
+and request completion/errors/cancellation. Model events use `phase: "summary"` or `"answer"`.
+Tool error results are marked `status: "error"` even when the HTTP request succeeds. A
+`request.error` with `status: 200` means the response stream failed after headers were sent.
+
+```json
+{"type":"tool.start","round":0,"callId":"call_1","tool":"search_documents","requestId":"...","elapsedMs":480}
+{"type":"tool.end","round":0,"callId":"call_1","tool":"search_documents","status":"ok","durationMs":140,"requestId":"...","elapsedMs":620}
+```
+
+Logs contain metadata by default. For local prompt and tool payload inspection, also set
+`CHAT_DEBUG_CONTENT=1`. This takes effect only with `NODE_ENV=development`. Payment prompt fields
+and bank tool payloads are omitted, and sequences of six or more digits are masked. Other
+conversation content can appear when content capture is enabled. Trace records stay on the server;
+the browser still receives only normal chat events. Set `CHAT_DEBUG=0` to turn tracing off.
+
+Core callers can pass `onTrace(event)` to `runChat` or `provider.streamChat` to collect diagnostic
+events for tests or another log sink. Callbacks are synchronous; exceptions from them are ignored.
+`createTrace({ requestId, write, captureContent? })` provides JSON formatting, timing and masking.
+Custom callbacks receive content fields directly and should apply their own capture policy.
+
 ## Scripts
 
 | Command          | What it does                                                                           |

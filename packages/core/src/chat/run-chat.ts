@@ -4,8 +4,10 @@ import type { ChatEvent, ChatProvider, ChatTool } from '../types';
 import { createSummarizer, fitHistory } from './context';
 import { buildSystemPrompt, withSystemPrompt } from './prompt';
 import type { ChatRequest } from './validate';
+import { emitTrace, type TraceCallback } from './trace';
 
 export interface RunChatOptions {
+  onTrace?: TraceCallback;
   provider: ChatProvider;
   /** Documents for `search_documents`; the tool is offered only when there are files. */
   knowledge?: KnowledgeBase;
@@ -23,25 +25,54 @@ export interface RunChatOptions {
  */
 export async function* runChat(
   { messages, userInfo, pendingPayment }: ChatRequest,
-  { provider, knowledge, signal }: RunChatOptions,
+  { provider, knowledge, signal, onTrace }: RunChatOptions,
 ): AsyncGenerator<ChatEvent> {
+  emitTrace(onTrace, { type: 'history.start', messages: messages.length });
   // Over the history budget, older messages are replaced by a summary (an extra LLM call).
   const { messages: kept, summary } = await fitHistory(
     messages.filter((m) => m.role !== 'system'),
-    { summarize: createSummarizer(provider, signal) },
+    { summarize: createSummarizer(provider, signal, onTrace) },
   );
+  emitTrace(onTrace, {
+    type: 'history.ready',
+    messages: kept.length,
+    summarized: summary?.count ?? 0,
+  });
   const prompt = buildSystemPrompt({ userInfo, summary: summary?.content, pendingPayment });
 
   const events: ChatEvent[] = summary ? [{ type: 'summary', ...summary }] : [];
   const tools: ChatTool[] = [
-    ...(knowledge && knowledge.files().length > 0 ? [searchDocumentsTool(knowledge)] : []),
+    ...(knowledge && knowledge.files().length > 0 ? [searchDocumentsTool(knowledge, onTrace)] : []),
     updateBankInfoTool({
       pending: pendingPayment,
       onUpdate: (payment) => events.push({ type: 'payment', payment }),
     }),
   ];
 
-  for await (const text of provider.streamChat(withSystemPrompt(kept, prompt), { signal, tools })) {
+  if (onTrace) {
+    // Bank sections stay private even with development content capture enabled.
+    const debugPrompt = buildSystemPrompt({
+      userInfo: { ...userInfo, payment: userInfo.payment ? '[redacted]' : undefined },
+      summary: summary?.content,
+    });
+    emitTrace(onTrace, {
+      type: 'prompt.ready',
+      characters: prompt.length,
+      tools: tools.map((tool) => tool.name),
+      pendingPayment: Boolean(pendingPayment),
+      content: { messages: withSystemPrompt(kept, debugPrompt) },
+    });
+  }
+  let firstText = true;
+  for await (const text of provider.streamChat(withSystemPrompt(kept, prompt), {
+    signal,
+    tools,
+    onTrace,
+  })) {
+    if (firstText) {
+      emitTrace(onTrace, { type: 'response.first_text' });
+      firstText = false;
+    }
     yield* events.splice(0);
     yield { type: 'text', text };
   }

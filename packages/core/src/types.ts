@@ -1,3 +1,5 @@
+import type { TraceCallback } from './chat/trace';
+
 export type ChatRole = 'system' | 'user' | 'assistant';
 
 export interface ChatMessage {
@@ -6,6 +8,8 @@ export interface ChatMessage {
 }
 
 export interface ChatOptions {
+  /** Optional server-side diagnostics, separate from answer text. */
+  onTrace?: TraceCallback;
   /** Aborts generation, e.g. when the client disconnects. */
   signal?: AbortSignal;
   /** Tools the model may call before answering. Providers without tool support ignore them. */

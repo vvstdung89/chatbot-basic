@@ -15,7 +15,7 @@ export default async function setup() {
   const next = createRequire(import.meta.url).resolve('next/dist/bin/next');
   const server = spawn(process.execPath, [next, 'start', '-p', String(E2E_PORT)], {
     cwd: appDir,
-    env: { ...process.env, CHAT_PROVIDER: 'echo' },
+    env: { ...process.env, CHAT_PROVIDER: 'echo', CHAT_DEBUG: '1' },
     stdio: 'ignore',
   });
 
