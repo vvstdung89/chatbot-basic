@@ -3,14 +3,20 @@ import {
   ChatRequestError,
   createSummarizer,
   fitHistory,
+  formatPaymentInfo,
   getProvider,
   parseMessages,
+  parsePendingPayment,
   parseUserInfo,
+  resolvePendingPayment,
   searchDocumentsTool,
   type ChatMessage,
   type ChatProvider,
   type HistorySummary,
+  type PaymentQrInfo,
+  type PaymentStatus,
   type UserInfo,
+  withPaymentStatus,
   withSummary,
   withSystemPrompt,
 } from '@chatbot/core';
@@ -18,19 +24,23 @@ import { knowledge } from '@/lib/knowledge';
 
 /**
  * POST /api/chat
- * Body: { messages: ChatMessage[], userInfo?: UserInfo }
+ * Body: { messages: ChatMessage[], userInfo?: UserInfo, pendingPayment?: PaymentQrInfo }
  * Response: the assistant reply, streamed as plain UTF-8 text. The model may search the
  * knowledge documents (via tool calls) before replying. When older messages were summarized,
  * the X-Chat-Summary header holds encodeURIComponent(JSON.stringify({ count, content })).
+ * With pendingPayment (QR details awaiting confirmation), the latest user message is classified;
+ * when it confirms or declines, X-Payment-Update holds encodeURIComponent(JSON.stringify(status)).
  * Errors: { error: string } with 400 (bad request), 500 (misconfigured), 502 (provider failed).
  */
 export async function POST(request: Request): Promise<Response> {
   let messages: ChatMessage[];
   let userInfo: UserInfo;
+  let pendingPayment: PaymentQrInfo | undefined;
   try {
     const body: unknown = await request.json();
     messages = parseMessages(body);
     userInfo = parseUserInfo(body);
+    pendingPayment = parsePendingPayment(body);
   } catch (err) {
     const error = err instanceof ChatRequestError ? err.message : 'Body must be valid JSON';
     return Response.json({ error }, { status: 400 });
@@ -55,7 +65,22 @@ export async function POST(request: Request): Promise<Response> {
     console.error(`[chat] ${provider.name} summary failed:`, err);
     return Response.json({ error: `${provider.name}: ${errorMessage(err)}` }, { status: 502 });
   }
-  messages = withSystemPrompt(messages, withSummary(buildSystemPrompt(userInfo), summary?.content));
+
+  // QR payment details awaiting confirmation: classify the user's reply (an extra LLM call).
+  let payment: PaymentStatus | undefined;
+  if (pendingPayment) {
+    const reply = messages.findLast((m) => m.role === 'user')?.content ?? '';
+    try {
+      payment = await resolvePendingPayment(provider, pendingPayment, reply, request.signal);
+    } catch (err) {
+      console.error(`[chat] ${provider.name} payment confirmation failed:`, err);
+      payment = { status: 'pending', payment: formatPaymentInfo(pendingPayment) };
+    }
+    if (payment.status === 'confirmed') userInfo = { ...userInfo, payment: payment.payment };
+  }
+
+  const prompt = withSummary(buildSystemPrompt(userInfo), summary?.content);
+  messages = withSystemPrompt(messages, withPaymentStatus(prompt, payment));
 
   // Wait for the first chunk so upstream failures (bad key, unknown model, rate limit)
   // become an HTTP error rather than a 200 response whose stream breaks.
@@ -76,6 +101,10 @@ export async function POST(request: Request): Promise<Response> {
       'Content-Type': 'text/plain; charset=utf-8',
       'Cache-Control': 'no-store',
       ...(summary && { 'X-Chat-Summary': encodeURIComponent(JSON.stringify(summary)) }),
+      ...(payment &&
+        payment.status !== 'pending' && {
+          'X-Payment-Update': encodeURIComponent(JSON.stringify(payment)),
+        }),
     },
   });
 }

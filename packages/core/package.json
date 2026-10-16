@@ -5,7 +5,9 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./user-info": "./src/user-info.ts"
+    "./user-info": "./src/user-info.ts",
+    "./vietqr": "./src/vietqr.ts",
+    "./qr-image": "./src/qr-image.ts"
   },
   "scripts": {
     "typecheck": "tsc",
@@ -13,10 +15,14 @@
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
+    "@types/qrcode": "^1.5.6",
+    "qrcode": "^1.5.4",
     "typescript": "^7.0.2",
     "vitest": "^5.0.4"
   },
   "dependencies": {
-    "openai": "^7.34.0"
+    "jsqr": "^1.4.0",
+    "openai": "^7.34.0",
+    "sharp": "^0.35.5"
   }
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ChatRequestError, parseMessages, parseUserInfo } from './validate';
+import { ChatRequestError, parseMessages, parsePendingPayment, parseUserInfo } from './validate';
 
 describe('parseMessages', () => {
   it('returns well-formed messages, dropping unknown fields', () => {
@@ -37,5 +37,26 @@ describe('parseUserInfo', () => {
     ['too long section', { userInfo: { payment: 'x'.repeat(10_001) } }],
   ])('rejects %s', (_, body) => {
     expect(() => parseUserInfo(body)).toThrow(ChatRequestError);
+  });
+});
+
+describe('parsePendingPayment', () => {
+  const info = { bin: '970436', accountNumber: '0123456789', type: 'account' };
+
+  it('returns the pending payment details, or undefined when absent', () => {
+    expect(
+      parsePendingPayment({ pendingPayment: { ...info, bankShortName: 'Vietcombank', x: 1 } }),
+    ).toEqual({ ...info, bankShortName: 'Vietcombank' });
+    expect(parsePendingPayment({})).toBeUndefined();
+  });
+
+  it.each([
+    ['non-object', 'x'],
+    ['bad BIN', { ...info, bin: '97043' }],
+    ['bad account number', { ...info, accountNumber: '12 34' }],
+    ['bad type', { ...info, type: 'wallet' }],
+    ['too long name', { ...info, accountName: 'A'.repeat(201) }],
+  ])('rejects %s', (_, pendingPayment) => {
+    expect(() => parsePendingPayment({ pendingPayment })).toThrow(ChatRequestError);
   });
 });

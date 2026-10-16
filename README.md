@@ -15,6 +15,7 @@ A streaming chatbot in TypeScript. By default it talks to
 │       └── src/
 │           ├── app/
 │           │   ├── api/chat/route.ts   POST /api/chat, streams the reply as text
+│           │   ├── api/payment-qr/route.ts  POST /api/payment-qr, reads a bank QR image
 │           │   ├── layout.tsx
 │           │   ├── page.tsx
 │           │   └── globals.css
@@ -27,6 +28,10 @@ A streaming chatbot in TypeScript. By default it talks to
 │           ├── prompt.ts               System prompt (edit it here) + User Info, summary prompt
 │           ├── context.ts              History budget and summarizing older messages
 │           ├── user-info.ts            User Info parts (browser-safe)
+│           ├── vietqr.ts               Bank QR (VietQR) parsing and chat texts (browser-safe)
+│           ├── banks.json              Bank list (BIN → name)
+│           ├── qr-image.ts             Find the QR in an image (sharp + jsqr, server only)
+│           ├── payment-confirm.ts      Classify the reply to a QR read-back
 │           ├── knowledge.ts            Document search (chunking, embeddings, tool)
 │           └── providers/
 │               ├── index.ts            Provider registry (getProvider, getEmbedder)
@@ -111,6 +116,22 @@ replaced by `content`. The UI keeps showing all messages and adds a collapsible 
 conversation summarized" divider.
 
 A failure after the reply has started aborts the stream; the UI keeps the partial reply.
+
+### Bank QR → User Payment
+
+`POST /api/payment-qr` takes multipart form data with an `image` file (PNG, JPEG or WebP, max
+5 MB), finds the QR code and reads it as a VietQR. It responds `200` with
+`{ bin, bankCode?, bankShortName?, bankName?, accountNumber, accountName?, type }`, `400` for a bad
+upload, or `422` when there is no readable bank QR (no QR, not VietQR, checksum mismatch). The
+image is not stored.
+
+In the chat, the **QR** button uploads an image; the chat then shows `[Ảnh mã QR ngân hàng]` and
+the assistant reads the details back and asks for confirmation (plain chat text). The browser
+sends those details as `pendingPayment` with the following messages; the server classifies each
+reply with one extra LLM call (`PAYMENT_CONFIRM_PROMPT`). On confirm or decline the response
+header `X-Payment-Update` is `encodeURIComponent(JSON.stringify({ status, payment? }))` and the
+browser replaces User Payment (confirm) or drops the pending details (decline). Bank and account
+always come from the QR; only the account holder name may come from the user's reply.
 
 ## Documents (RAG)
 

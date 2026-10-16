@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { buildSystemPrompt, SYSTEM_PROMPT, withSummary, withSystemPrompt } from './prompt';
+import {
+  buildSystemPrompt,
+  SYSTEM_PROMPT,
+  withPaymentStatus,
+  withSummary,
+  withSystemPrompt,
+} from './prompt';
 import type { ChatMessage } from './types';
 
 const messages: ChatMessage[] = [
@@ -64,5 +70,30 @@ describe('withSummary', () => {
   it('returns the prompt unchanged without a summary', () => {
     expect(withSummary('Be brief.', undefined)).toBe('Be brief.');
     expect(withSummary('Be brief.', ' \n ')).toBe('Be brief.');
+  });
+});
+
+describe('withPaymentStatus', () => {
+  const payment = 'Ngân hàng: Vietcombank\nSố tài khoản: 0123456789';
+
+  it('tells the assistant the payment info was updated', () => {
+    const prompt = withPaymentStatus('Be brief.', { status: 'confirmed', payment });
+    expect(prompt).toMatch(/^Be brief\.\n\n## Payment Update ##\n/);
+    expect(prompt).toContain(payment);
+    expect(prompt).toContain('updated');
+  });
+
+  it('tells the assistant the update was declined', () => {
+    expect(withPaymentStatus('Be brief.', { status: 'declined' })).toContain('declined');
+  });
+
+  it('tells the assistant a confirmation is still pending', () => {
+    const prompt = withPaymentStatus('Be brief.', { status: 'pending', payment });
+    expect(prompt).toContain('waiting for the user');
+    expect(prompt).toContain(payment);
+  });
+
+  it('returns the prompt unchanged without a status', () => {
+    expect(withPaymentStatus('Be brief.', undefined)).toBe('Be brief.');
   });
 });

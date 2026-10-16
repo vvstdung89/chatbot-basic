@@ -1,5 +1,5 @@
 export type { ChatMessage, ChatOptions, ChatProvider, ChatRole, ChatTool, Embedder } from './types';
-export { ChatRequestError, parseMessages, parseUserInfo } from './validate';
+export { ChatRequestError, parseMessages, parsePendingPayment, parseUserInfo } from './validate';
 export {
   MAX_USER_INFO_LENGTH,
   USER_INFO_SECTIONS,
@@ -8,11 +8,28 @@ export {
 } from './user-info';
 export {
   buildSystemPrompt,
+  PAYMENT_CONFIRM_PROMPT,
   SUMMARY_PROMPT,
   SYSTEM_PROMPT,
+  withPaymentStatus,
   withSummary,
   withSystemPrompt,
 } from './prompt';
+export {
+  formatPaymentInfo,
+  normalizeAccountName,
+  parseVietQR,
+  paymentReadBack,
+  PaymentQrError,
+  type PaymentQrInfo,
+  type PaymentStatus,
+} from './vietqr';
+export {
+  classifyPaymentReply,
+  resolvePendingPayment,
+  type PaymentReplyDecision,
+} from './payment-confirm';
+// QR image decoding (sharp, server only) is imported from '@chatbot/core/qr-image'.
 export {
   createSummarizer,
   estimateTokens,

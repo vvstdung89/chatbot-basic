@@ -1,13 +1,19 @@
 'use client';
 
 import { Fragment, useEffect, useRef, useState, type FormEvent } from 'react';
-import type { ChatMessage, HistorySummary } from '@chatbot/core';
+import type { ChatMessage, HistorySummary, PaymentStatus } from '@chatbot/core';
 import {
   MAX_USER_INFO_LENGTH,
   USER_INFO_SECTIONS,
   type UserInfo,
   type UserInfoKey,
 } from '@chatbot/core/user-info';
+import {
+  paymentReadBack,
+  paymentReadFailed,
+  QR_UPLOAD_MESSAGE,
+  type PaymentQrInfo,
+} from '@chatbot/core/vietqr';
 
 const USER_INFO_STORAGE_KEY = 'chatbot.userInfo';
 
@@ -19,7 +25,11 @@ export function Chat() {
   const [userInfo, setUserInfo] = useState<UserInfo>({});
   // Where the server summarized older messages: they stay visible, the model sees the summary.
   const [summary, setSummary] = useState<HistorySummary | null>(null);
+  // Bank details read from an uploaded QR, sent with each message until the user confirms or
+  // declines in the chat.
+  const [pendingPayment, setPendingPayment] = useState<PaymentQrInfo | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end' });
@@ -60,7 +70,11 @@ export function Chat() {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: history, userInfo }),
+        body: JSON.stringify({
+          messages: history,
+          userInfo,
+          pendingPayment: pendingPayment ?? undefined,
+        }),
       });
       if (!res.ok || !res.body) {
         const data = (await res.json().catch(() => null)) as { error?: string } | null;
@@ -68,6 +82,12 @@ export function Chat() {
       }
       const header = res.headers.get('X-Chat-Summary');
       setSummary(header ? (JSON.parse(decodeURIComponent(header)) as HistorySummary) : null);
+      const update = res.headers.get('X-Payment-Update');
+      if (update) {
+        const payment = JSON.parse(decodeURIComponent(update)) as PaymentStatus;
+        if (payment.status === 'confirmed') updateUserInfo('payment', payment.payment);
+        setPendingPayment(null);
+      }
 
       const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
       for (;;) {
@@ -83,6 +103,36 @@ export function Chat() {
     } finally {
       setPending(false);
     }
+  }
+
+  /** Reads a bank QR image on the server, then reads it back in the chat for confirmation. */
+  async function uploadQr(file: File) {
+    if (pending) return;
+    const history: ChatMessage[] = [...messages, { role: 'user', content: QR_UPLOAD_MESSAGE }];
+    setMessages([...history, { role: 'assistant', content: '' }]);
+    setPending(true);
+    setError(null);
+
+    let reply: string;
+    try {
+      const form = new FormData();
+      form.append('image', file);
+      const res = await fetch('/api/payment-qr', { method: 'POST', body: form });
+      const data = (await res.json().catch(() => null)) as unknown;
+      if (res.ok) {
+        reply = paymentReadBack(data as PaymentQrInfo);
+        setPendingPayment(data as PaymentQrInfo);
+      } else {
+        reply = paymentReadFailed(
+          (data as { error?: string } | null)?.error ?? `HTTP ${res.status}`,
+        );
+      }
+    } catch (err) {
+      reply = paymentReadFailed(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPending(false);
+    }
+    setMessages([...history, { role: 'assistant', content: reply }]);
   }
 
   return (
@@ -128,6 +178,25 @@ export function Chat() {
       )}
 
       <form className="composer" onSubmit={send}>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          hidden
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            e.target.value = ''; // allow picking the same file again
+            if (file) void uploadQr(file);
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => fileRef.current?.click()}
+          disabled={pending}
+          aria-label="Upload bank QR image"
+        >
+          QR
+        </button>
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
